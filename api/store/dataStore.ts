@@ -287,7 +287,11 @@ class DataStore {
   private updateWorkOrderEscalation(): void {
     const now = Date.now()
     for (const order of this.workOrders) {
-      if ((order.status === 'pending' || order.status === 'assigned') && order.createTime) {
+      if (
+        (order.status === 'pending' || order.status === 'assigned') &&
+        order.createTime &&
+        !this.escalatedWorkOrders.has(order.id)
+      ) {
         const createTimeMs = Date.parse(order.createTime.replace(' ', 'T'))
         if (!isNaN(createTimeMs) && now - createTimeMs > 30 * 60 * 1000) {
           order.status = 'escalated'
@@ -298,8 +302,14 @@ class DataStore {
           }
           const station = this.stations.find((s) => s.id === order.stationId)
           if (station) {
-            this.addNewAlarm(station, 'power', 'critical', '工单响应超时，已自动升级')
+            this.addNewAlarm(
+              station,
+              'transmission',
+              'critical',
+              `工单(${order.id})响应超时，已自动升级为${order.priority === 'urgent' ? '紧急' : '高'}优先级`,
+            )
           }
+          this.escalatedWorkOrders.add(order.id)
         }
       }
     }
@@ -587,34 +597,68 @@ class DataStore {
     return inspection
   }
 
+  private hashCode(str: string): number {
+    let hash = 0
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i)
+      hash = ((hash << 5) - hash) + char
+      hash = hash & hash
+    }
+    return Math.abs(hash)
+  }
+
+  private seededRandom(seed: number): () => number {
+    let s = seed
+    return () => {
+      s = (s * 1664525 + 1013904223) & 0xffffffff
+      return (s >>> 0) / 4294967296
+    }
+  }
+
   getDailyReport(date?: string): DailyReportData {
     const targetDate = date || (() => {
       const today = new Date()
       return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
     })()
 
-    const stationReports = this.stations.map((station) => {
-      const stationAlarms = this.alarms.filter((a) => a.stationId === station.id)
-      const stationOrders = this.workOrders.filter((w) => w.stationId === station.id)
-      const avgResponseTime = stationOrders.length > 0
-        ? stationOrders.reduce((sum, w) => sum + (w.responseTime || 0), 0) / stationOrders.length
-        : 0
+    if (this.dailyReportCache.has(targetDate)) {
+      return this.dailyReportCache.get(targetDate)!
+    }
+
+    const daySeed = this.hashCode(targetDate)
+    const rand = this.seededRandom(daySeed)
+    const seededRange = (min: number, max: number) => rand() * (max - min) + min
+
+    const stationReports = this.stations.map((station, idx) => {
+      const stationSeed = this.hashCode(targetDate + station.id)
+      const sRand = this.seededRandom(stationSeed)
+      const sRange = (min: number, max: number) => sRand() * (max - min) + min
+
+      const baseStation = this.stations[idx] || station
+      const baseAlarmCount = Math.max(0, Math.round(this.alarms.filter((a) => a.stationId === station.id).length * (0.6 + sRange(0, 0.8))))
+      const baseOrders = this.workOrders.filter((w) => w.stationId === station.id)
+      const baseResponseTime = baseOrders.length > 0
+        ? baseOrders.reduce((sum, w) => sum + (w.responseTime || 0), 0) / baseOrders.length
+        : sRange(8, 25)
 
       return {
         stationId: station.id,
         stationName: station.name,
-        avgUsers: Math.round(station.onlineUsers * randomInRange(0.8, 1.2)),
-        avgUplink: Math.round(station.uplinkTraffic * randomInRange(0.8, 1.2)),
-        avgDownlink: Math.round(station.downlinkTraffic * randomInRange(0.8, 1.2)),
-        alarmCount: stationAlarms.length,
-        avgResponseTime: Math.round(avgResponseTime),
+        avgUsers: Math.max(0, Math.round(baseStation.onlineUsers * (0.85 + sRange(0, 0.35)))),
+        avgUplink: Math.max(1, Math.round(baseStation.uplinkTraffic * (0.85 + sRange(0, 0.35)))),
+        avgDownlink: Math.max(5, Math.round(baseStation.downlinkTraffic * (0.85 + sRange(0, 0.35)))),
+        alarmCount: baseAlarmCount,
+        avgResponseTime: Math.round(baseResponseTime),
       }
     })
 
-    return {
+    const report: DailyReportData = {
       date: targetDate,
       stations: stationReports,
     }
+
+    this.dailyReportCache.set(targetDate, report)
+    return report
   }
 
   getOperationLogs(): OperationLog[] {
