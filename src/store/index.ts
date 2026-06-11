@@ -29,6 +29,7 @@ interface AppState {
   setHighlightWorkOrderId: (id: string | null) => void;
 
   loadAll: () => Promise<void>;
+  loadStations: () => Promise<void>;
   loadAlarms: () => Promise<void>;
   loadWorkOrders: () => Promise<void>;
   loadStationDetail: (id: string) => Promise<void>;
@@ -64,6 +65,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPlanningMode: (v) => set({ planningMode: v, candidatePosition: null }),
   setCandidatePosition: (p) => set({ candidatePosition: p }),
   setHighlightWorkOrderId: (id) => set({ highlightWorkOrderId: id }),
+
+  loadStations: async () => {
+    try {
+      const stations = await api.getStations();
+      set({ stations });
+    } catch (e) { console.error(e); }
+  },
 
   loadAlarms: async () => {
     try {

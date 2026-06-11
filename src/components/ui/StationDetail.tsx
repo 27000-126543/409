@@ -73,6 +73,7 @@ export default function StationDetail() {
   const selectedStationFaults = useAppStore((s) => s.selectedStationFaults);
   const setSelectedStationId = useAppStore((s) => s.setSelectedStationId);
   const loadStationDetail = useAppStore((s) => s.loadStationDetail);
+  const loadStations = useAppStore((s) => s.loadStations);
   const loadAlarms = useAppStore((s) => s.loadAlarms);
   const loadWorkOrders = useAppStore((s) => s.loadWorkOrders);
   const [handlingAlarmId, setHandlingAlarmId] = useState<string | null>(null);
@@ -90,10 +91,11 @@ export default function StationDetail() {
     try {
       setHandlingAlarmId(alarm.id);
       await api.handleAlarm(alarm.id);
-      await loadAlarms();
-      if (alarm.relatedWorkOrderId) {
-        await loadWorkOrders();
-      }
+      await Promise.all([
+        loadStations(),
+        loadAlarms(),
+        loadWorkOrders(),
+      ]);
     } catch (e) {
       console.error(e);
     } finally {

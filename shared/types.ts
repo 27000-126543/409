@@ -170,3 +170,29 @@ export interface TrendReportData {
     avgResponseTime: number;
   }[];
 }
+
+export interface EfficiencyReportData {
+  startDate: string;
+  endDate: string;
+  overall: {
+    totalOrders: number;
+    avgDispatchMinutes: number;
+    avgArrivalMinutes: number;
+    avgCompleteMinutes: number;
+    escalateRate: number;
+  };
+  byStationType: Record<string, {
+    totalOrders: number;
+    avgDispatchMinutes: number;
+    avgArrivalMinutes: number;
+    avgCompleteMinutes: number;
+    escalateRate: number;
+  }>;
+  byAlarmType: Record<string, {
+    totalOrders: number;
+    avgDispatchMinutes: number;
+    avgArrivalMinutes: number;
+    avgCompleteMinutes: number;
+    escalateRate: number;
+  }>;
+}

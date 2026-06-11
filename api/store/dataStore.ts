@@ -16,6 +16,7 @@ import type {
   Vec3,
   TrendReportData,
   StationType,
+  EfficiencyReportData,
 } from '../../shared/types.js'
 import {
   generateUsers,
@@ -68,6 +69,10 @@ class DataStore {
 
   constructor() {
     this.init()
+    this.fillExistingWorkOrdersTracking()
+    for (const station of this.stations) {
+      this.recalcStationAlarmStatus(station.id)
+    }
     this.startRealTimeUpdates()
   }
 
@@ -102,6 +107,90 @@ class DataStore {
     }, 60000)
   }
 
+  private recalcStationAlarmStatus(stationId: string): void {
+    const station = this.stations.find((s) => s.id === stationId)
+    if (!station) return
+
+    const unhandledAlarms = this.alarms.filter((a) => a.stationId === stationId && !a.handled)
+    let newStatus: BaseStation['alarmStatus'] = 'normal'
+
+    if (unhandledAlarms.some((a) => a.level === 'critical')) {
+      newStatus = 'critical'
+    } else if (unhandledAlarms.some((a) => a.level === 'warning')) {
+      newStatus = 'warning'
+    }
+
+    station.alarmStatus = newStatus
+  }
+
+  private fillExistingWorkOrdersTracking(): void {
+    for (const order of this.workOrders) {
+      const station = this.stations.find((s) => s.id === order.stationId)
+      if (station && !order.stationPosition) {
+        order.stationPosition = { ...station.position }
+      }
+
+      if (!order.maintainerPosition && order.maintainerId) {
+        const maintainer = this.maintainers.find((m) => m.id === order.maintainerId)
+        if (maintainer) {
+          order.maintainerPosition = { ...maintainer.position }
+        }
+      }
+
+      if (!order.expectedArrivalMinutes && order.stationPosition && order.maintainerPosition) {
+        const distance = calcDistance(order.stationPosition, order.maintainerPosition)
+        order.expectedArrivalMinutes = Math.max(1, Math.ceil(distance / 120))
+      }
+
+      if (!order.relatedAlarmIds || order.relatedAlarmIds.length === 0) {
+        const stationAlarms = this.alarms.filter((a) => a.stationId === order.stationId && !a.handled)
+        let matchedAlarms: Alarm[] = []
+
+        if (order.priority === 'urgent') {
+          matchedAlarms = stationAlarms.filter((a) => a.level === 'critical')
+        }
+        if (matchedAlarms.length === 0) {
+          matchedAlarms = stationAlarms.filter((a) => a.level === 'warning')
+        }
+        if (matchedAlarms.length === 0) {
+          matchedAlarms = [...this.alarms.filter((a) => a.stationId === order.stationId)].slice(0, 2)
+        }
+
+        const count = Math.min(randomInt(1, 2), matchedAlarms.length)
+        if (count > 0) {
+          order.relatedAlarmIds = matchedAlarms.slice(0, count).map((a) => a.id)
+        } else {
+          order.relatedAlarmIds = []
+        }
+      }
+
+      if (order.status === 'escalated' && !order.escalateReason) {
+        order.escalateReason = '工单响应超时超过30分钟'
+      }
+
+      if (order.status === 'escalated' && !order.escalateTime) {
+        const createTimeMs = Date.parse(order.createTime.replace(' ', 'T'))
+        if (!isNaN(createTimeMs)) {
+          const escalateDate = new Date(createTimeMs + 31 * 60 * 1000)
+          order.escalateTime = formatTime(escalateDate)
+        }
+      }
+    }
+
+    for (const order of this.workOrders) {
+      if (order.relatedAlarmIds && order.relatedAlarmIds.length > 0) {
+        for (const alarmId of order.relatedAlarmIds) {
+          const alarm = this.alarms.find((a) => a.id === alarmId)
+          if (alarm) {
+            alarm.relatedWorkOrderId = order.id
+            alarm.relatedWorkOrderStatus = order.status
+            alarm.relatedMaintainerName = order.maintainerName
+          }
+        }
+      }
+    }
+  }
+
   private addNewAlarm(
     station: BaseStation,
     type: Alarm['type'],
@@ -119,6 +208,7 @@ class DataStore {
       handled: false,
     }
     this.alarms.unshift(alarm)
+    this.recalcStationAlarmStatus(station.id)
     return alarm
   }
 
@@ -379,17 +469,21 @@ class DataStore {
               issue: '天线松动，存在脱落风险',
               time: formatTime(new Date()),
             })
-            this.addNewAlarm(station, 'antenna', 'warning', '无人机巡检发现天线松动')
+            const alarm = this.addNewAlarm(station, 'antenna', 'warning', '无人机巡检发现天线松动')
             const wo: WorkOrder = {
               id: generateId('wo'),
               stationId: station.id,
               stationName: station.name,
+              stationPosition: { ...station.position },
               faultType: '无人机巡检发现天线松动',
+              relatedAlarmIds: [alarm.id],
               createTime: formatTime(new Date()),
               status: 'pending',
               priority: 'high',
             }
             this.workOrders.unshift(wo)
+            alarm.relatedWorkOrderId = wo.id
+            alarm.relatedWorkOrderStatus = 'pending'
             this.droneInspectionIssues.add(inspection.id)
           }
         }
@@ -496,6 +590,7 @@ class DataStore {
           order.relatedAlarmIds = order.relatedAlarmIds.filter((id) => id !== alarmId)
         }
       }
+      this.recalcStationAlarmStatus(alarm.stationId)
       if (this.currentUser) {
         this.addLog(this.currentUser, '处理告警', `处理告警: ${alarm.message} (${alarm.stationName})`)
       }
@@ -521,6 +616,12 @@ class DataStore {
       createTime: formatTime(new Date()),
       status: 'pending',
     }
+    if (!order.stationPosition && order.stationId) {
+      const station = this.stations.find((s) => s.id === order.stationId)
+      if (station) {
+        order.stationPosition = { ...station.position }
+      }
+    }
     this.workOrders.unshift(order)
     if (this.currentUser) {
       this.addLog(this.currentUser, '创建工单', `创建工单 ${order.id}: ${order.faultType}`)
@@ -539,6 +640,23 @@ class DataStore {
         order.maintainerPosition = maintainer?.position
         order.assignTime = formatTime(new Date())
         order.responseTime = randomInt(5, 60)
+        if (maintainer && order.stationPosition) {
+          const distance = calcDistance(order.stationPosition, maintainer.position)
+          order.expectedArrivalMinutes = Math.max(1, Math.ceil(distance / 120))
+        }
+        if (!order.stationPosition) {
+          const station = this.stations.find((s) => s.id === order.stationId)
+          if (station) order.stationPosition = { ...station.position }
+        }
+      }
+      if (order.relatedAlarmIds && order.relatedAlarmIds.length > 0) {
+        for (const alarmId of order.relatedAlarmIds) {
+          const alarm = this.alarms.find((a) => a.id === alarmId)
+          if (alarm) {
+            alarm.relatedWorkOrderStatus = status
+            if (order.maintainerName) alarm.relatedMaintainerName = order.maintainerName
+          }
+        }
       }
       if (this.currentUser) {
         this.addLog(this.currentUser, '更新工单', `工单 ${order.id} 状态更新为: ${status}`)
@@ -566,6 +684,8 @@ class DataStore {
         }
       }
     }
+
+    this.recalcStationAlarmStatus(order.stationId)
 
     if (order.maintainerId) {
       const maintainer = this.maintainers.find((m) => m.id === order.maintainerId)
@@ -797,6 +917,126 @@ class DataStore {
 
     this.dailyReportCache.set(targetDate, report)
     return report
+  }
+
+  getEfficiencyReport(
+    startDate?: string,
+    endDate?: string,
+    stationTypes?: StationType[],
+    alarmTypes?: string[],
+  ): EfficiencyReportData {
+    const startMs = startDate ? new Date(startDate).getTime() : 0
+    const endMs = endDate ? new Date(endDate).getTime() + 24 * 60 * 60 * 1000 : Infinity
+
+    interface OrderMetrics {
+      dispatchMinutes: number
+      arrivalMinutes: number
+      completeMinutes: number
+      escalated: boolean
+      stationType: string
+      alarmType: string
+    }
+
+    const metricsList: OrderMetrics[] = []
+
+    for (const order of this.workOrders) {
+      if (order.status !== 'completed') continue
+
+      const createMs = Date.parse(order.createTime.replace(' ', 'T'))
+      if (isNaN(createMs)) continue
+      if (createMs < startMs || createMs >= endMs) continue
+
+      const station = this.stations.find((s) => s.id === order.stationId)
+      const stationType = station?.type || 'unknown'
+      if (stationTypes && stationTypes.length > 0 && !stationTypes.includes(stationType as StationType)) {
+        continue
+      }
+
+      let alarmType = order.faultType
+      if (order.relatedAlarmIds && order.relatedAlarmIds.length > 0) {
+        const firstAlarm = this.alarms.find((a) => a.id === order.relatedAlarmIds![0])
+        if (firstAlarm) {
+          alarmType = firstAlarm.type
+        }
+      }
+      if (alarmTypes && alarmTypes.length > 0 && !alarmTypes.includes(alarmType)) {
+        continue
+      }
+
+      let dispatchMinutes = 0
+      if (order.assignTime) {
+        const assignMs = Date.parse(order.assignTime.replace(' ', 'T'))
+        if (!isNaN(assignMs)) {
+          dispatchMinutes = Math.round((assignMs - createMs) / 60000)
+        }
+      }
+
+      let arrivalMinutes = order.expectedArrivalMinutes
+      if (arrivalMinutes === undefined || arrivalMinutes === null) {
+        arrivalMinutes = randomInt(8, 20)
+      }
+
+      const completeMinutes = order.responseTime || 0
+
+      const escalated = !!order.escalateTime
+
+      metricsList.push({
+        dispatchMinutes,
+        arrivalMinutes,
+        completeMinutes,
+        escalated,
+        stationType,
+        alarmType,
+      })
+    }
+
+    const calcStats = (items: OrderMetrics[]) => {
+      const totalOrders = items.length
+      if (totalOrders === 0) {
+        return {
+          totalOrders: 0,
+          avgDispatchMinutes: 0,
+          avgArrivalMinutes: 0,
+          avgCompleteMinutes: 0,
+          escalateRate: 0,
+        }
+      }
+      const totalDispatch = items.reduce((sum, m) => sum + m.dispatchMinutes, 0)
+      const totalArrival = items.reduce((sum, m) => sum + m.arrivalMinutes, 0)
+      const totalComplete = items.reduce((sum, m) => sum + m.completeMinutes, 0)
+      const escalatedCount = items.filter((m) => m.escalated).length
+
+      return {
+        totalOrders,
+        avgDispatchMinutes: Math.round(totalDispatch / totalOrders),
+        avgArrivalMinutes: Math.round(totalArrival / totalOrders),
+        avgCompleteMinutes: Math.round(totalComplete / totalOrders),
+        escalateRate: Math.round((escalatedCount / totalOrders) * 100) / 100,
+      }
+    }
+
+    const byStationType: Record<string, ReturnType<typeof calcStats>> = {}
+    const stationTypeSet = new Set(metricsList.map((m) => m.stationType))
+    for (const st of stationTypeSet) {
+      byStationType[st] = calcStats(metricsList.filter((m) => m.stationType === st))
+    }
+
+    const byAlarmType: Record<string, ReturnType<typeof calcStats>> = {}
+    const alarmTypeSet = new Set(metricsList.map((m) => m.alarmType))
+    for (const at of alarmTypeSet) {
+      byAlarmType[at] = calcStats(metricsList.filter((m) => m.alarmType === at))
+    }
+
+    const actualStartDate = startDate || ''
+    const actualEndDate = endDate || ''
+
+    return {
+      startDate: actualStartDate,
+      endDate: actualEndDate,
+      overall: calcStats(metricsList),
+      byStationType,
+      byAlarmType,
+    }
   }
 
   getOperationLogs(): OperationLog[] {

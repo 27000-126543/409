@@ -19,7 +19,9 @@ export default function AlarmPanel() {
   const alarms = useAppStore((s) => s.alarms);
   const setSelectedStationId = useAppStore((s) => s.setSelectedStationId);
   const setHighlightWorkOrderId = useAppStore((s) => s.setHighlightWorkOrderId);
+  const loadStations = useAppStore((s) => s.loadStations);
   const loadAlarms = useAppStore((s) => s.loadAlarms);
+  const loadWorkOrders = useAppStore((s) => s.loadWorkOrders);
 
   const unhandledAlarms = useMemo(() => {
     return alarms
@@ -31,7 +33,11 @@ export default function AlarmPanel() {
     try {
       setHandlingAlarmId(alarmId);
       await api.handleAlarm(alarmId);
-      await loadAlarms();
+      await Promise.all([
+        loadStations(),
+        loadAlarms(),
+        loadWorkOrders(),
+      ]);
     } catch (e) {
       console.error(e);
     } finally {
@@ -159,7 +165,7 @@ export default function AlarmPanel() {
                     animate={{ opacity: 1, x: 0, scale: 1 }}
                     exit={{ opacity: 0, x: 50, height: 0, marginBottom: 0 }}
                     transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-                    className={`relative p-3 rounded-lg border ${styles.border} ${styles.bg} ${isNew ? styles.glow : ''} ${isClosed ? 'opacity-50' : ''}`}
+                    className={`relative p-3 rounded-lg border ${styles.border} ${styles.bg} ${isNew ? styles.glow : ''} ${isClosed ? 'opacity-50 line-through' : ''}`}
                   >
                     {isNew && (
                       <motion.span
@@ -227,20 +233,22 @@ export default function AlarmPanel() {
                               <MapPin className="w-2.5 h-2.5" />
                               定位
                             </button>
-                            <button
-                              onClick={() => handleHandleAlarm(alarm.id)}
-                              disabled={isHandling}
-                              className={`px-2.5 py-1 rounded text-[10px] font-medium tracking-wider
-                                border ${styles.border} ${styles.iconColor} ${styles.bg}
-                                hover:brightness-125 transition-all duration-200
-                                disabled:opacity-50 disabled:cursor-not-allowed
-                                flex items-center gap-1`}
-                            >
-                              {isHandling && (
-                                <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                              )}
-                              {isHandling ? '处理中' : '处理'}
-                            </button>
+                            {!isClosed && (
+                              <button
+                                onClick={() => handleHandleAlarm(alarm.id)}
+                                disabled={isHandling}
+                                className={`px-2.5 py-1 rounded text-[10px] font-medium tracking-wider
+                                  border ${styles.border} ${styles.iconColor} ${styles.bg}
+                                  hover:brightness-125 transition-all duration-200
+                                  disabled:opacity-50 disabled:cursor-not-allowed
+                                  flex items-center gap-1`}
+                              >
+                                {isHandling && (
+                                  <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                                )}
+                                {isHandling ? '处理中' : '处理'}
+                              </button>
+                            )}
                           </div>
                         </div>
                       </div>

@@ -1,6 +1,6 @@
 import type {
   BaseStation, TrafficDataPoint, FaultRecord, WorkOrder, Maintainer,
-  Alarm, SiteSelection, DroneRoute, DroneInspection, User, OperationLog, DailyReportData, TrendReportData, StationType
+  Alarm, SiteSelection, DroneRoute, DroneInspection, User, OperationLog, DailyReportData, TrendReportData, StationType, EfficiencyReportData
 } from '../../shared/types';
 
 const BASE = '/api';
@@ -93,6 +93,12 @@ export const api = {
     const qs = [`startDate=${startDate}`, `endDate=${endDate}`];
     if (types && types.length) qs.push(`types=${types.join(',')}`);
     return request<TrendReportData>(`/reports/trend?${qs.join('&')}`);
+  },
+  getEfficiencyReport: (startDate: string, endDate: string, stationTypes?: StationType[], alarmTypes?: string[]) => {
+    const qs = [`startDate=${startDate}`, `endDate=${endDate}`];
+    if (stationTypes && stationTypes.length) qs.push(`stationTypes=${stationTypes.join(',')}`);
+    if (alarmTypes && alarmTypes.length) qs.push(`alarmTypes=${alarmTypes.join(',')}`);
+    return request<EfficiencyReportData>(`/reports/efficiency?${qs.join('&')}`);
   },
 
   getLogs: () => request<OperationLog[]>('/logs'),

@@ -15,6 +15,7 @@ import { Scene } from '@/components/three/Scene';
 import AlarmPanel from '@/components/ui/AlarmPanel';
 import StationDetail from '@/components/ui/StationDetail';
 import StationMiniCard from '@/components/ui/StationMiniCard';
+import CommandCenter from '@/components/ui/CommandCenter';
 import type { StationType } from '../../shared/types';
 import { cn } from '@/lib/utils';
 
@@ -76,6 +77,10 @@ export default function Dashboard() {
         {selectedStationId && <AlarmPanel />}
 
         <StationDetail />
+
+        <div className="absolute bottom-4 right-4 z-10 w-[420px] h-[560px]">
+          <CommandCenter />
+        </div>
 
         <div className="absolute bottom-4 left-4 z-10 w-[380px]">
           <div className="cyber-panel hud-corner p-3">

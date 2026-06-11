@@ -10,6 +10,10 @@ import {
   TrendingUp,
   Table2,
   BarChart3,
+  Zap,
+  CheckCircle,
+  ArrowRight,
+  Activity,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -23,7 +27,7 @@ import {
 } from 'recharts';
 import { api } from '@/lib/api';
 import StatCard from '@/components/ui/StatCard';
-import type { DailyReportData, TrendReportData, StationType } from '../../shared/types';
+import type { DailyReportData, TrendReportData, StationType, EfficiencyReportData } from '../../shared/types';
 
 const formatDate = (date: Date) => {
   const y = date.getFullYear();
@@ -32,15 +36,34 @@ const formatDate = (date: Date) => {
   return `${y}-${m}-${d}`;
 };
 
-const STATION_TYPES: { value: StationType; label: string }[] = [
-  { value: 'macro', label: '宏基站' },
-  { value: 'micro', label: '微基站' },
-  { value: 'indoor', label: '室内分布' },
-  { value: 'core', label: '核心机房' },
+const STATION_TYPES: { value: StationType; label: string; color: string }[] = [
+  { value: 'macro', label: '宏基站', color: 'text-[#00E5FF]' },
+  { value: 'micro', label: '微基站', color: 'text-[#00E5FF]' },
+  { value: 'indoor', label: '室内分布', color: 'text-[#7B61FF]' },
+  { value: 'core', label: '核心机房', color: 'text-[#FFD700]' },
+];
+
+const ALARM_TYPES: { value: string; label: string }[] = [
+  { value: 'bandwidth', label: '带宽' },
+  { value: 'power', label: '供电' },
+  { value: 'transmission', label: '传输' },
+  { value: 'temperature', label: '温度' },
+  { value: 'humidity', label: '湿度' },
+  { value: 'battery', label: '电池' },
+  { value: 'antenna', label: '天线' },
 ];
 
 const getStationTypeLabel = (type: StationType): string => {
   return STATION_TYPES.find((t) => t.value === type)?.label ?? type;
+};
+
+const getStationTypeColor = (type: string): string => {
+  return STATION_TYPES.find((t) => t.value === type)?.color ?? 'text-cyber-text';
+};
+
+const getAlarmTypeLabel = (type: string): string => {
+  const found = ALARM_TYPES.find((t) => t.value === type);
+  return found ? found.label + '告警' : type;
 };
 
 const addDays = (date: Date, days: number): Date => {
@@ -61,7 +84,7 @@ const axisStroke = '#7A8BA3';
 const axisTickStyle = { fontSize: 10, fill: axisStroke };
 const axisLineStyle = { stroke: 'rgba(0, 229, 255, 0.15)' };
 
-type TabKey = 'daily' | 'trend';
+type TabKey = 'daily' | 'trend' | 'efficiency';
 
 export default function Reports() {
   const [activeTab, setActiveTab] = useState<TabKey>('daily');
@@ -71,6 +94,9 @@ export default function Reports() {
     'indoor',
     'core',
   ]);
+  const [selectedAlarmTypes, setSelectedAlarmTypes] = useState<string[]>(
+    ALARM_TYPES.map((t) => t.value)
+  );
 
   const [date, setDate] = useState(formatDate(new Date()));
   const [dailyLoading, setDailyLoading] = useState(false);
@@ -82,8 +108,18 @@ export default function Reports() {
   const [trendLoading, setTrendLoading] = useState(false);
   const [trendData, setTrendData] = useState<TrendReportData | null>(null);
 
+  const [efficiencyLoading, setEfficiencyLoading] = useState(false);
+  const [efficiencyError, setEfficiencyError] = useState<string | null>(null);
+  const [efficiencyData, setEfficiencyData] = useState<EfficiencyReportData | null>(null);
+
   const toggleType = (type: StationType) => {
     setSelectedTypes((prev) =>
+      prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type]
+    );
+  };
+
+  const toggleAlarmType = (type: string) => {
+    setSelectedAlarmTypes((prev) =>
       prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type]
     );
   };
@@ -112,6 +148,30 @@ export default function Reports() {
     }
   };
 
+  const fetchEfficiency = async (
+    start: string,
+    end: string,
+    stationTypes: StationType[],
+    alarmTypes: string[]
+  ) => {
+    setEfficiencyLoading(true);
+    setEfficiencyError(null);
+    try {
+      const report = await api.getEfficiencyReport(
+        start,
+        end,
+        stationTypes.length > 0 ? stationTypes : undefined,
+        alarmTypes.length > 0 ? alarmTypes : undefined
+      );
+      setEfficiencyData(report);
+    } catch (e) {
+      console.error(e);
+      setEfficiencyError('获取效率分析数据失败');
+    } finally {
+      setEfficiencyLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchDaily(date, selectedTypes);
   }, [date]);
@@ -120,12 +180,22 @@ export default function Reports() {
     fetchTrend(startDate, endDate, selectedTypes);
   }, [startDate, endDate]);
 
+  useEffect(() => {
+    if (activeTab === 'efficiency') {
+      fetchEfficiency(startDate, endDate, selectedTypes, selectedAlarmTypes);
+    }
+  }, [activeTab]);
+
   const handleDailyQuery = () => {
     fetchDaily(date, selectedTypes);
   };
 
   const handleTrendQuery = () => {
     fetchTrend(startDate, endDate, selectedTypes);
+  };
+
+  const handleEfficiencyQuery = () => {
+    fetchEfficiency(startDate, endDate, selectedTypes, selectedAlarmTypes);
   };
 
   const filteredStations = useMemo(() => {
@@ -192,6 +262,35 @@ export default function Reports() {
     XLSX.writeFile(wb, `趋势对比_${trendData.startDate}_${trendData.endDate}.xlsx`);
   };
 
+  const handleEfficiencyExport = () => {
+    if (!efficiencyData) return;
+    const wb = XLSX.utils.book_new();
+
+    const stationTypeRows = Object.entries(efficiencyData.byStationType).map(([type, data]) => ({
+      '基站类型': getStationTypeLabel(type as StationType),
+      '工单数量': data.totalOrders,
+      '平均派单耗时(分钟)': Number(data.avgDispatchMinutes.toFixed(1)),
+      '平均到达耗时(分钟)': Number(data.avgArrivalMinutes.toFixed(1)),
+      '平均完成耗时(分钟)': Number(data.avgCompleteMinutes.toFixed(1)),
+      '超时升级率': `${(data.escalateRate * 100).toFixed(1)}%`,
+    }));
+    const ws1 = XLSX.utils.json_to_sheet(stationTypeRows);
+    XLSX.utils.book_append_sheet(wb, ws1, '按基站类型统计');
+
+    const alarmTypeRows = Object.entries(efficiencyData.byAlarmType).map(([type, data]) => ({
+      '告警类型': getAlarmTypeLabel(type),
+      '工单数量': data.totalOrders,
+      '平均派单耗时(分钟)': Number(data.avgDispatchMinutes.toFixed(1)),
+      '平均到达耗时(分钟)': Number(data.avgArrivalMinutes.toFixed(1)),
+      '平均完成耗时(分钟)': Number(data.avgCompleteMinutes.toFixed(1)),
+      '超时升级率': `${(data.escalateRate * 100).toFixed(1)}%`,
+    }));
+    const ws2 = XLSX.utils.json_to_sheet(alarmTypeRows);
+    XLSX.utils.book_append_sheet(wb, ws2, '按告警类型统计');
+
+    XLSX.writeFile(wb, `闭环效率分析_${efficiencyData.startDate}_${efficiencyData.endDate}.xlsx`);
+  };
+
   const typeFilter = (
     <div className="flex items-center gap-3 flex-wrap">
       <span className="text-xs text-cyber-muted">类型筛选：</span>
@@ -232,9 +331,49 @@ export default function Reports() {
     </div>
   );
 
+  const alarmTypeFilter = (
+    <div className="flex items-center gap-3 flex-wrap">
+      <span className="text-xs text-cyber-muted">告警类型：</span>
+      {ALARM_TYPES.map((t) => {
+        const checked = selectedAlarmTypes.includes(t.value);
+        return (
+          <label
+            key={t.value}
+            className={`cursor-pointer flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs transition-all ${
+              checked
+                ? 'border-cyber-accent bg-cyber-accent/10 text-cyber-accent shadow-[0_0_8px_rgba(0,229,255,0.3)]'
+                : 'border-cyber-border/40 text-cyber-muted hover:border-cyber-muted/60'
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={() => toggleAlarmType(t.value)}
+              className="sr-only"
+            />
+            <span
+              className={`w-3.5 h-3.5 flex items-center justify-center rounded-sm border ${
+                checked
+                  ? 'bg-cyber-accent border-cyber-accent'
+                  : 'bg-transparent border-cyber-muted/50'
+              }`}
+            >
+              {checked && (
+                <svg viewBox="0 0 12 12" className="w-2.5 h-2.5 text-cyber-bg" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M2 6l3 3 5-6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </span>
+            {t.label}
+          </label>
+        );
+      })}
+    </div>
+  );
+
   return (
     <div className="w-full h-full flex flex-col gap-4 p-4 overflow-hidden">
-      <div className="flex items-center justify-between shrink-0 gap-4 flex-wrap">
+      <div className="flex items-start justify-between shrink-0 gap-4 flex-wrap">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
             <FileText className="w-5 h-5 text-cyber-accent" />
@@ -265,12 +404,26 @@ export default function Reports() {
               <TrendingUp className="w-4 h-4" />
               趋势对比
             </button>
+            <button
+              onClick={() => setActiveTab('efficiency')}
+              className={`px-4 py-1.5 rounded text-sm font-medium transition-all flex items-center gap-1.5 ${
+                activeTab === 'efficiency'
+                  ? 'bg-cyber-accent/15 text-cyber-accent glow-text shadow-[0_0_10px_rgba(0,229,255,0.25)] border border-cyber-accent/40'
+                  : 'text-cyber-muted hover:text-cyber-text'
+              }`}
+            >
+              <Activity className="w-4 h-4" />
+              闭环效率
+            </button>
           </div>
         </div>
-        {typeFilter}
+        <div className="flex flex-col gap-2 items-end">
+          {typeFilter}
+          {activeTab === 'efficiency' && alarmTypeFilter}
+        </div>
       </div>
 
-      {activeTab === 'daily' ? (
+      {activeTab === 'daily' && (
         <div className="flex-1 flex flex-col gap-4 min-h-0 overflow-hidden">
           <div className="flex items-center gap-3 shrink-0 flex-wrap">
             <div className="flex items-center gap-2 cyber-panel px-3 py-1.5">
@@ -403,7 +556,9 @@ export default function Reports() {
             </div>
           </div>
         </div>
-      ) : (
+      )}
+
+      {activeTab === 'trend' && (
         <div className="flex-1 flex flex-col gap-4 min-h-0 overflow-hidden">
           <div className="flex items-center gap-3 shrink-0 flex-wrap">
             <div className="flex items-center gap-2 cyber-panel px-3 py-1.5">
@@ -725,6 +880,206 @@ export default function Reports() {
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'efficiency' && (
+        <div className="flex-1 flex flex-col gap-4 min-h-0 overflow-hidden">
+          <div className="flex items-center gap-3 shrink-0 flex-wrap">
+            <div className="flex items-center gap-2 cyber-panel px-3 py-1.5">
+              <Calendar className="w-4 h-4 text-cyber-muted" />
+              <span className="text-xs text-cyber-muted">开始</span>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="bg-transparent text-sm text-cyber-text focus:outline-none"
+              />
+            </div>
+            <div className="flex items-center gap-2 cyber-panel px-3 py-1.5">
+              <Calendar className="w-4 h-4 text-cyber-muted" />
+              <span className="text-xs text-cyber-muted">结束</span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="bg-transparent text-sm text-cyber-text focus:outline-none"
+              />
+            </div>
+            <button onClick={handleEfficiencyQuery} disabled={efficiencyLoading} className="cyber-btn flex items-center gap-1.5 text-sm">
+              查询
+            </button>
+            <div className="flex-1" />
+            <button onClick={handleEfficiencyExport} disabled={efficiencyLoading || !efficiencyData} className="cyber-btn flex items-center gap-1.5 text-sm">
+              <Download className="w-4 h-4" />
+              导出Excel
+            </button>
+          </div>
+
+          {efficiencyError && (
+            <div className="cyber-panel border-cyber-danger/50 p-3 text-center text-cyber-danger text-sm">
+              {efficiencyError}
+            </div>
+          )}
+
+          <div className="grid grid-cols-5 gap-4 shrink-0">
+            <StatCard
+              icon={FileText}
+              label="总工单数"
+              value={efficiencyLoading ? '--' : efficiencyData?.overall.totalOrders.toLocaleString() ?? '0'}
+              unit="单"
+            />
+            <StatCard
+              icon={Zap}
+              label="平均派单耗时"
+              value={efficiencyLoading ? '--' : efficiencyData?.overall.avgDispatchMinutes.toFixed(1) ?? '0'}
+              unit="分钟"
+              colorClass="text-[#00E5FF]"
+            />
+            <StatCard
+              icon={ArrowRight}
+              label="平均到达耗时"
+              value={efficiencyLoading ? '--' : efficiencyData?.overall.avgArrivalMinutes.toFixed(1) ?? '0'}
+              unit="分钟"
+              colorClass="text-[#7B61FF]"
+            />
+            <StatCard
+              icon={CheckCircle}
+              label="平均完成耗时"
+              value={efficiencyLoading ? '--' : efficiencyData?.overall.avgCompleteMinutes.toFixed(1) ?? '0'}
+              unit="分钟"
+              colorClass="text-cyber-success"
+            />
+            <StatCard
+              icon={AlertTriangle}
+              label="超时升级率"
+              value={efficiencyLoading ? '--' : `${((efficiencyData?.overall.escalateRate ?? 0) * 100).toFixed(1)}`}
+              unit="%"
+              highlight={!efficiencyLoading && (efficiencyData?.overall.escalateRate ?? 0) > 0.2}
+            />
+          </div>
+
+          <div className="flex-1 flex gap-4 min-h-0 overflow-hidden">
+            <div className="cyber-panel hud-corner p-4 flex flex-col min-h-0 flex-1">
+              <div className="flex items-center gap-2 mb-3 shrink-0">
+                <Table2 className="w-4 h-4 text-cyber-accent" />
+                <span className="font-orbitron text-sm font-bold text-cyber-accent glow-text">
+                  按基站类型统计
+                </span>
+                <span className="text-xs text-cyber-muted">({efficiencyData ? Object.keys(efficiencyData.byStationType).length : 0})</span>
+              </div>
+              <div className="flex-1 overflow-auto scrollbar-cyber">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-cyber-bg2/90 backdrop-blur z-10">
+                    <tr className="text-cyber-muted text-xs">
+                      <th className="px-3 py-2 font-medium text-left">类型</th>
+                      <th className="px-3 py-2 font-medium text-right">工单数量</th>
+                      <th className="px-3 py-2 font-medium text-right">平均派单(分)</th>
+                      <th className="px-3 py-2 font-medium text-right">平均到达(分)</th>
+                      <th className="px-3 py-2 font-medium text-right">平均完成(分)</th>
+                      <th className="px-3 py-2 font-medium text-right">超时升级率</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {efficiencyLoading ? (
+                      <tr>
+                        <td colSpan={6} className="text-center text-cyber-muted py-8">
+                          加载中...
+                        </td>
+                      </tr>
+                    ) : !efficiencyData || Object.keys(efficiencyData.byStationType).length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="text-center text-cyber-muted py-8">
+                          暂无数据
+                        </td>
+                      </tr>
+                    ) : (
+                      Object.entries(efficiencyData.byStationType).map(([type, data]) => (
+                        <tr
+                          key={type}
+                          className="border-t border-cyber-border/40 hover:bg-cyber-accent/5 transition-colors"
+                        >
+                          <td className="px-3 py-2 text-left">
+                            <span className={`font-medium ${getStationTypeColor(type)}`}>
+                              {getStationTypeLabel(type as StationType)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-right text-cyber-text">{data.totalOrders}</td>
+                          <td className="px-3 py-2 text-right text-cyber-text">{data.avgDispatchMinutes.toFixed(1)}</td>
+                          <td className="px-3 py-2 text-right text-cyber-text">{data.avgArrivalMinutes.toFixed(1)}</td>
+                          <td className="px-3 py-2 text-right text-cyber-text">{data.avgCompleteMinutes.toFixed(1)}</td>
+                          <td className="px-3 py-2 text-right">
+                            <span className={data.escalateRate > 0.2 ? 'text-cyber-danger font-medium' : 'text-cyber-muted'}>
+                              {(data.escalateRate * 100).toFixed(1)}%
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="cyber-panel hud-corner p-4 flex flex-col min-h-0 flex-1">
+              <div className="flex items-center gap-2 mb-3 shrink-0">
+                <AlertTriangle className="w-4 h-4 text-cyber-warning" />
+                <span className="font-orbitron text-sm font-bold text-cyber-accent glow-text">
+                  按告警类型统计
+                </span>
+                <span className="text-xs text-cyber-muted">({efficiencyData ? Object.keys(efficiencyData.byAlarmType).length : 0})</span>
+              </div>
+              <div className="flex-1 overflow-auto scrollbar-cyber">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-cyber-bg2/90 backdrop-blur z-10">
+                    <tr className="text-cyber-muted text-xs">
+                      <th className="px-3 py-2 font-medium text-left">告警类型</th>
+                      <th className="px-3 py-2 font-medium text-right">工单数量</th>
+                      <th className="px-3 py-2 font-medium text-right">平均派单(分)</th>
+                      <th className="px-3 py-2 font-medium text-right">平均到达(分)</th>
+                      <th className="px-3 py-2 font-medium text-right">平均完成(分)</th>
+                      <th className="px-3 py-2 font-medium text-right">超时升级率</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {efficiencyLoading ? (
+                      <tr>
+                        <td colSpan={6} className="text-center text-cyber-muted py-8">
+                          加载中...
+                        </td>
+                      </tr>
+                    ) : !efficiencyData || Object.keys(efficiencyData.byAlarmType).length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="text-center text-cyber-muted py-8">
+                          暂无数据
+                        </td>
+                      </tr>
+                    ) : (
+                      Object.entries(efficiencyData.byAlarmType).map(([type, data]) => (
+                        <tr
+                          key={type}
+                          className="border-t border-cyber-border/40 hover:bg-cyber-accent/5 transition-colors"
+                        >
+                          <td className="px-3 py-2 text-left text-cyber-text">
+                            {getAlarmTypeLabel(type)}
+                          </td>
+                          <td className="px-3 py-2 text-right text-cyber-text">{data.totalOrders}</td>
+                          <td className="px-3 py-2 text-right text-cyber-text">{data.avgDispatchMinutes.toFixed(1)}</td>
+                          <td className="px-3 py-2 text-right text-cyber-text">{data.avgArrivalMinutes.toFixed(1)}</td>
+                          <td className="px-3 py-2 text-right text-cyber-text">{data.avgCompleteMinutes.toFixed(1)}</td>
+                          <td className="px-3 py-2 text-right">
+                            <span className={data.escalateRate > 0.2 ? 'text-cyber-danger font-medium' : 'text-cyber-muted'}>
+                              {(data.escalateRate * 100).toFixed(1)}%
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>
