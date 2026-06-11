@@ -61,6 +61,8 @@ class DataStore {
   private acJustActivated: Set<string> = new Set()
   private criticalFaultWorkOrders: Map<string, string> = new Map()
   private droneInspectionIssues: Set<string> = new Set()
+  private escalatedWorkOrders: Set<string> = new Set()
+  private dailyReportCache: Map<string, DailyReportData> = new Map()
 
   constructor() {
     this.init()
@@ -137,24 +139,16 @@ class DataStore {
     station: BaseStation,
     faultType: string,
     alarmType: 'power' | 'transmission',
+    alarmMessage: string,
   ): void {
-    const existingWO = this.workOrders.find(
-      (w) => w.stationId === station.id && (w.status === 'pending' || w.status === 'assigned' || w.status === 'processing'),
-    )
-    if (existingWO) return
-
-    if (this.criticalFaultWorkOrders.has(station.id)) return
+    const dispatchKey = `${station.id}-${alarmType}-${Date.now() - (Date.now() % 60000)}`
+    if (this.criticalFaultWorkOrders.has(dispatchKey)) return
 
     const maintainer = this.findNearestIdleMaintainer(station.position)
     if (!maintainer) return
 
     station.alarmStatus = 'critical'
-    this.addNewAlarm(
-      station,
-      alarmType,
-      'critical',
-      faultType === '电源故障' ? '市电中断或电池电量过低，请立即处理' : '传输链路中断，请立即处理',
-    )
+    this.addNewAlarm(station, alarmType, 'critical', alarmMessage)
 
     maintainer.status = 'busy'
 
@@ -172,6 +166,7 @@ class DataStore {
       maintainerPosition: { ...maintainer.position },
     }
     this.workOrders.unshift(order)
+    this.criticalFaultWorkOrders.set(dispatchKey, order.id)
     this.criticalFaultWorkOrders.set(station.id, order.id)
   }
 
@@ -198,6 +193,7 @@ class DataStore {
         }
         const otherFreqs = frequencyOptions.filter((f) => f !== station.currentFrequency)
         station.currentFrequency = randomChoice(otherFreqs)
+        station.antennaTilt = station.targetAntennaTilt
         this.addNewAlarm(
           station,
           'bandwidth',
@@ -212,14 +208,29 @@ class DataStore {
         this.bandwidthOptimizedStations.delete(station.id)
       }
 
-      let hasCriticalFault = false
-      if (station.powerSource === 'battery' && station.batteryLevel < 20) {
-        this.autoDispatchWorkOrder(station, '电源故障', 'power')
-        hasCriticalFault = true
+      const tiltDiff = station.targetAntennaTilt - station.antennaTilt
+      if (Math.abs(tiltDiff) > 0.1) {
+        station.antennaTilt += tiltDiff * 0.15
       }
-      if (!hasCriticalFault && Math.random() < 0.005) {
-        this.autoDispatchWorkOrder(station, '传输中断', 'transmission')
-        hasCriticalFault = true
+
+      if (station.powerSource === 'battery' && station.batteryLevel < 30 && !this.criticalFaultWorkOrders.has(`${station.id}-power-low`)) {
+        this.autoDispatchWorkOrder(
+          station,
+          '电池电量告警',
+          'power',
+          '电池电量低于30%，存在断电风险，请立即处理',
+        )
+        this.criticalFaultWorkOrders.set(`${station.id}-power-low`, '1')
+      }
+
+      if (Math.random() < 0.005 && !this.criticalFaultWorkOrders.has(`${station.id}-transmission-${Date.now() - (Date.now() % 300000)}`)) {
+        this.autoDispatchWorkOrder(
+          station,
+          '传输中断',
+          'transmission',
+          '传输链路中断，请立即处理',
+        )
+        this.criticalFaultWorkOrders.set(`${station.id}-transmission-${Date.now() - (Date.now() % 300000)}`, '1')
       }
 
       const prevAC = station.airConditioning
@@ -259,12 +270,16 @@ class DataStore {
       if (station.powerSource === 'grid' && Math.random() < 0.003) {
         station.powerSource = 'battery'
         station.alarmStatus = 'critical'
-        this.addNewAlarm(station, 'power', 'critical', '市电中断，已切换至电池供电')
+        this.autoDispatchWorkOrder(
+          station,
+          '市电中断',
+          'power',
+          '市电中断，已切换至电池供电，请立即处理',
+        )
       }
 
       if (station.powerSource === 'battery' && Math.random() < 0.02) {
         station.powerSource = 'grid'
-        this.criticalFaultWorkOrders.delete(station.id)
       }
     }
   }
