@@ -35,6 +35,8 @@ export const api = {
     request<TrafficDataPoint[]>(`/stations/${id}/traffic`),
   getStationFaults: (id: string) =>
     request<FaultRecord[]>(`/stations/${id}/faults`),
+  getFaultRecords: () =>
+    request<FaultRecord[]>('/stations/faults/list'),
 
   getAlarms: (handled?: boolean) =>
     request<Alarm[]>(`/alarms${handled !== undefined ? `?handled=${handled}` : ''}`),

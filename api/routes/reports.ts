@@ -5,7 +5,8 @@ const router = Router()
 
 router.get('/daily', async (req: Request, res: Response): Promise<void> => {
   try {
-    const report = dataStore.getDailyReport()
+    const date = req.query.date as string | undefined
+    const report = dataStore.getDailyReport(date)
     res.status(200).json({
       success: true,
       data: report,

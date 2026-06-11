@@ -100,7 +100,9 @@ export default function Reports() {
 
   const handleExport = async () => {
     if (!data) return;
+    const reportDate = data.date;
     const rows = data.stations.map((s) => ({
+      日期: reportDate,
       基站编号: s.stationId,
       基站名称: s.stationName,
       平均在线用户: s.avgUsers,
@@ -112,7 +114,7 @@ export default function Reports() {
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '日报数据');
-    XLSX.writeFile(wb, `基站日报_${date}.xlsx`);
+    XLSX.writeFile(wb, `基站日报_${reportDate}.xlsx`);
   };
 
   return (

@@ -13,6 +13,7 @@ import type {
   DailyReportData,
   WorkOrderStatus,
   ApprovalStatus,
+  Vec3,
 } from '../../shared/types.js'
 import {
   generateUsers,
@@ -34,6 +35,12 @@ import {
   generateId,
 } from '../data/mockData.js'
 
+const frequencyOptions = ['1.8GHz', '2.1GHz', '2.6GHz', '3.5GHz', '4.9GHz']
+
+const calcDistance = (a: Vec3, b: Vec3): number => {
+  return Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.z - b.z, 2))
+}
+
 class DataStore {
   private users: User[] = []
   private stations: BaseStation[] = []
@@ -48,6 +55,12 @@ class DataStore {
   private trafficCache: Map<string, TrafficDataPoint[]> = new Map()
   private dailyReport: DailyReportData | null = null
   private currentUser: User | null = null
+
+  private bandwidthOptimizedStations: Set<string> = new Set()
+  private batteryWarnedStations: Set<string> = new Set()
+  private acJustActivated: Set<string> = new Set()
+  private criticalFaultWorkOrders: Map<string, string> = new Map()
+  private droneInspectionIssues: Set<string> = new Set()
 
   constructor() {
     this.init()
@@ -77,11 +90,89 @@ class DataStore {
       this.updateStationMetrics()
       this.updateMaintainerPositions()
       this.updateDroneInspections()
+      this.updateWorkOrderEscalation()
     }, 5000)
 
     setInterval(() => {
       this.updateTrafficData()
     }, 60000)
+  }
+
+  private addNewAlarm(
+    station: BaseStation,
+    type: Alarm['type'],
+    level: Alarm['level'],
+    message: string,
+  ): void {
+    this.alarms.unshift({
+      id: generateId('alarm'),
+      stationId: station.id,
+      stationName: station.name,
+      type,
+      level,
+      message,
+      time: formatTime(new Date()),
+      handled: false,
+    })
+  }
+
+  private findNearestIdleMaintainer(position: Vec3): Maintainer | undefined {
+    const idleMaintainers = this.maintainers.filter((m) => m.status === 'idle')
+    if (idleMaintainers.length === 0) return undefined
+
+    let nearest = idleMaintainers[0]
+    let minDist = calcDistance(position, nearest.position)
+
+    for (const m of idleMaintainers.slice(1)) {
+      const dist = calcDistance(position, m.position)
+      if (dist < minDist) {
+        minDist = dist
+        nearest = m
+      }
+    }
+    return nearest
+  }
+
+  private autoDispatchWorkOrder(
+    station: BaseStation,
+    faultType: string,
+    alarmType: 'power' | 'transmission',
+  ): void {
+    const existingWO = this.workOrders.find(
+      (w) => w.stationId === station.id && (w.status === 'pending' || w.status === 'assigned' || w.status === 'processing'),
+    )
+    if (existingWO) return
+
+    if (this.criticalFaultWorkOrders.has(station.id)) return
+
+    const maintainer = this.findNearestIdleMaintainer(station.position)
+    if (!maintainer) return
+
+    station.alarmStatus = 'critical'
+    this.addNewAlarm(
+      station,
+      alarmType,
+      'critical',
+      faultType === '电源故障' ? '市电中断或电池电量过低，请立即处理' : '传输链路中断，请立即处理',
+    )
+
+    maintainer.status = 'busy'
+
+    const order: WorkOrder = {
+      id: generateId('wo'),
+      stationId: station.id,
+      stationName: station.name,
+      faultType,
+      createTime: formatTime(new Date()),
+      assignTime: formatTime(new Date()),
+      status: 'assigned',
+      priority: 'urgent',
+      maintainerId: maintainer.id,
+      maintainerName: maintainer.name,
+      maintainerPosition: { ...maintainer.position },
+    }
+    this.workOrders.unshift(order)
+    this.criticalFaultWorkOrders.set(station.id, order.id)
   }
 
   private updateStationMetrics(): void {
@@ -91,42 +182,112 @@ class DataStore {
       station.downlinkTraffic = Math.max(10, station.downlinkTraffic + randomInRange(-50, 50))
       station.uplinkBandwidthUsage = Math.max(10, Math.min(99, station.uplinkBandwidthUsage + randomInRange(-3, 3)))
       station.temperature = Math.max(15, Math.min(80, station.temperature + randomInRange(-1, 1)))
-      station.humidity = Math.max(20, Math.min(90, station.humidity + randomInRange(-2, 2)))
-      station.batteryLevel = Math.max(0, Math.min(100, station.batteryLevel + randomInRange(-0.5, 0.5)))
+      station.humidity = Math.max(20, Math.min(95, station.humidity + randomInRange(-2, 2)))
 
-      if (Math.random() < 0.02) {
-        if (station.alarmStatus === 'normal') {
-          station.alarmStatus = randomChoice(['warning', 'critical'])
-          this.addNewAlarm(station)
-        } else if (station.alarmStatus === 'warning' && Math.random() < 0.3) {
-          station.alarmStatus = 'normal'
+      if (station.powerSource === 'grid') {
+        station.batteryLevel = Math.min(100, station.batteryLevel + randomInRange(-0.1, 0.2))
+      } else {
+        station.batteryLevel = Math.max(0, station.batteryLevel - randomInRange(0.1, 0.5))
+      }
+
+      if (station.uplinkBandwidthUsage > 80 && !this.bandwidthOptimizedStations.has(station.id)) {
+        if (station.targetAntennaTilt < 8) {
+          station.targetAntennaTilt = 12
+        } else {
+          station.targetAntennaTilt = 5
         }
+        const otherFreqs = frequencyOptions.filter((f) => f !== station.currentFrequency)
+        station.currentFrequency = randomChoice(otherFreqs)
+        this.addNewAlarm(
+          station,
+          'bandwidth',
+          'warning',
+          '上行带宽占用超80%，已自动调整天线倾角并切换备用频段',
+        )
+        if (station.alarmStatus === 'normal') {
+          station.alarmStatus = 'warning'
+        }
+        this.bandwidthOptimizedStations.add(station.id)
+      } else if (station.uplinkBandwidthUsage <= 70 && this.bandwidthOptimizedStations.has(station.id)) {
+        this.bandwidthOptimizedStations.delete(station.id)
+      }
+
+      let hasCriticalFault = false
+      if (station.powerSource === 'battery' && station.batteryLevel < 20) {
+        this.autoDispatchWorkOrder(station, '电源故障', 'power')
+        hasCriticalFault = true
+      }
+      if (!hasCriticalFault && Math.random() < 0.005) {
+        this.autoDispatchWorkOrder(station, '传输中断', 'transmission')
+        hasCriticalFault = true
+      }
+
+      const prevAC = station.airConditioning
+      if (station.temperature > 45 || station.humidity > 90) {
+        station.airConditioning = true
+      } else if (station.temperature < 35 && station.humidity < 75) {
+        station.airConditioning = false
+      }
+
+      if (station.airConditioning) {
+        station.temperature = Math.max(15, station.temperature - 0.5)
+        station.humidity = Math.max(20, station.humidity - 1)
+        if (!prevAC && !this.acJustActivated.has(station.id)) {
+          if (station.temperature > 45) {
+            this.addNewAlarm(station, 'temperature', 'warning', '设备温度过高，已自动开启空调降温')
+          } else if (station.humidity > 90) {
+            this.addNewAlarm(station, 'humidity', 'warning', '环境湿度过高，已自动开启空调除湿')
+          }
+          this.acJustActivated.add(station.id)
+        }
+      } else {
+        this.acJustActivated.delete(station.id)
+      }
+
+      if (station.batteryLevel < 70) {
+        if (station.powerSource === 'grid') {
+          station.batteryLevel = Math.min(100, station.batteryLevel + 0.8)
+        }
+        if (!this.batteryWarnedStations.has(station.id) && station.batteryLevel < 70) {
+          this.addNewAlarm(station, 'battery', 'warning', '电池电量低于70%，正在自动充电')
+          this.batteryWarnedStations.add(station.id)
+        }
+      } else if (station.batteryLevel >= 95) {
+        this.batteryWarnedStations.delete(station.id)
+      }
+
+      if (station.powerSource === 'grid' && Math.random() < 0.003) {
+        station.powerSource = 'battery'
+        station.alarmStatus = 'critical'
+        this.addNewAlarm(station, 'power', 'critical', '市电中断，已切换至电池供电')
+      }
+
+      if (station.powerSource === 'battery' && Math.random() < 0.02) {
+        station.powerSource = 'grid'
+        this.criticalFaultWorkOrders.delete(station.id)
       }
     }
   }
 
-  private addNewAlarm(station: BaseStation): void {
-    const alarmTypes: Alarm['type'][] = ['bandwidth', 'power', 'transmission', 'temperature', 'humidity', 'battery', 'antenna']
-    const alarmMessages: Record<Alarm['type'], string> = {
-      bandwidth: '带宽使用率超过阈值',
-      power: '电源异常，切换至备用电池',
-      transmission: '传输链路中断',
-      temperature: '设备温度过高',
-      humidity: '环境湿度异常',
-      battery: '电池电量过低',
-      antenna: '天线倾角异常',
+  private updateWorkOrderEscalation(): void {
+    const now = Date.now()
+    for (const order of this.workOrders) {
+      if ((order.status === 'pending' || order.status === 'assigned') && order.createTime) {
+        const createTimeMs = Date.parse(order.createTime.replace(' ', 'T'))
+        if (!isNaN(createTimeMs) && now - createTimeMs > 30 * 60 * 1000) {
+          order.status = 'escalated'
+          if (order.priority === 'normal') {
+            order.priority = 'high'
+          } else if (order.priority === 'high') {
+            order.priority = 'urgent'
+          }
+          const station = this.stations.find((s) => s.id === order.stationId)
+          if (station) {
+            this.addNewAlarm(station, 'power', 'critical', '工单响应超时，已自动升级')
+          }
+        }
+      }
     }
-    const type = randomChoice(alarmTypes)
-    this.alarms.unshift({
-      id: generateId('alarm'),
-      stationId: station.id,
-      stationName: station.name,
-      type,
-      level: station.alarmStatus === 'critical' ? 'critical' : 'warning',
-      message: alarmMessages[type],
-      time: formatTime(new Date()),
-      handled: false,
-    })
   }
 
   private updateMaintainerPositions(): void {
@@ -138,11 +299,55 @@ class DataStore {
     }
   }
 
+  private findStationNearRoute(routeId: string): BaseStation | undefined {
+    const route = this.droneRoutes.find((r) => r.id === routeId)
+    if (!route || route.waypoints.length === 0) {
+      return randomChoice(this.stations)
+    }
+    const midpoint = route.waypoints[Math.floor(route.waypoints.length / 2)]
+    let nearest = this.stations[0]
+    let minDist = calcDistance(midpoint, nearest.position)
+    for (const s of this.stations.slice(1)) {
+      const dist = calcDistance(midpoint, s.position)
+      if (dist < minDist) {
+        minDist = dist
+        nearest = s
+      }
+    }
+    return nearest
+  }
+
   private updateDroneInspections(): void {
     for (const inspection of this.droneInspections) {
-      if (inspection.status === 'flying' && Math.random() < 0.1) {
-        inspection.status = 'completed'
-        inspection.endTime = formatTime(new Date())
+      if (inspection.status === 'flying') {
+        if (Math.random() < 0.2 && !this.droneInspectionIssues.has(inspection.id)) {
+          const station = this.findStationNearRoute(inspection.routeId)
+          if (station) {
+            inspection.photos.push({
+              stationId: station.id,
+              url: `/photos/drone-${inspection.id}-${Date.now()}.jpg`,
+              issue: '天线松动，存在脱落风险',
+              time: formatTime(new Date()),
+            })
+            this.addNewAlarm(station, 'antenna', 'warning', '无人机巡检发现天线松动')
+            const wo: WorkOrder = {
+              id: generateId('wo'),
+              stationId: station.id,
+              stationName: station.name,
+              faultType: '无人机巡检发现天线松动',
+              createTime: formatTime(new Date()),
+              status: 'pending',
+              priority: 'high',
+            }
+            this.workOrders.unshift(wo)
+            this.droneInspectionIssues.add(inspection.id)
+          }
+        }
+        if (Math.random() < 0.1) {
+          inspection.status = 'completed'
+          inspection.endTime = formatTime(new Date())
+          this.droneInspectionIssues.delete(inspection.id)
+        }
       } else if (inspection.status === 'scheduled' && Math.random() < 0.05) {
         inspection.status = 'flying'
       }
@@ -367,11 +572,34 @@ class DataStore {
     return inspection
   }
 
-  getDailyReport(): DailyReportData {
-    if (!this.dailyReport) {
-      this.dailyReport = generateDailyReport(this.stations, this.workOrders, this.alarms)
+  getDailyReport(date?: string): DailyReportData {
+    const targetDate = date || (() => {
+      const today = new Date()
+      return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+    })()
+
+    const stationReports = this.stations.map((station) => {
+      const stationAlarms = this.alarms.filter((a) => a.stationId === station.id)
+      const stationOrders = this.workOrders.filter((w) => w.stationId === station.id)
+      const avgResponseTime = stationOrders.length > 0
+        ? stationOrders.reduce((sum, w) => sum + (w.responseTime || 0), 0) / stationOrders.length
+        : 0
+
+      return {
+        stationId: station.id,
+        stationName: station.name,
+        avgUsers: Math.round(station.onlineUsers * randomInRange(0.8, 1.2)),
+        avgUplink: Math.round(station.uplinkTraffic * randomInRange(0.8, 1.2)),
+        avgDownlink: Math.round(station.downlinkTraffic * randomInRange(0.8, 1.2)),
+        alarmCount: stationAlarms.length,
+        avgResponseTime: Math.round(avgResponseTime),
+      }
+    })
+
+    return {
+      date: targetDate,
+      stations: stationReports,
     }
-    return this.dailyReport
   }
 
   getOperationLogs(): OperationLog[] {

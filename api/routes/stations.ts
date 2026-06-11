@@ -20,6 +20,21 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
   }
 })
 
+router.get('/faults/list', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const faults = dataStore.getFaultRecords()
+    res.status(200).json({
+      success: true,
+      data: faults,
+    })
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: '获取故障记录失败',
+    })
+  }
+})
+
 router.get('/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const station = dataStore.getStationById(req.params.id)
@@ -82,21 +97,6 @@ router.get('/:id/traffic', async (req: Request, res: Response): Promise<void> =>
 router.get('/:id/faults', async (req: Request, res: Response): Promise<void> => {
   try {
     const faults = dataStore.getFaultRecords(req.params.id)
-    res.status(200).json({
-      success: true,
-      data: faults,
-    })
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: '获取故障记录失败',
-    })
-  }
-})
-
-router.get('/faults/list', async (req: Request, res: Response): Promise<void> => {
-  try {
-    const faults = dataStore.getFaultRecords()
     res.status(200).json({
       success: true,
       data: faults,
