@@ -62,6 +62,7 @@ function SceneContent() {
   const siteSelections = useAppStore((s) => s.siteSelections);
   const candidatePosition = useAppStore((s) => s.candidatePosition);
   const planningMode = useAppStore((s) => s.planningMode);
+  const highlightWorkOrderId = useAppStore((s) => s.highlightWorkOrderId);
 
   const pointLights: { pos: [number, number, number]; color: string; intensity: number }[] = useMemo(() => {
     return [
@@ -113,6 +114,7 @@ function SceneContent() {
           key={path.orderId}
           from={path.from}
           to={path.to}
+          highlight={highlightWorkOrderId === path.orderId}
         />
       ))}
 

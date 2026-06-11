@@ -1,281 +1,471 @@
 import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  ClipboardList, Filter, Plus, Clock, CheckCircle2,
-  PlayCircle, ArrowUpCircle, UserCheck, X, AlertTriangle,
+  ClipboardList, X, MapPin, User, Clock, AlertTriangle,
+  CheckCircle2, Navigation, AlertOctagon, AlertCircle,
 } from 'lucide-react';
 import { useAppStore } from '@/store';
 import { cn } from '@/lib/utils';
-import type { WorkOrderStatus } from '../../shared/types';
+import { api } from '@/lib/api';
+import type { WorkOrder, WorkOrderStatus } from '../../shared/types';
 
-const statusColors: Record<WorkOrderStatus, string> = {
-  pending: '#FFB020', assigned: '#00E5FF', processing: '#7B61FF',
-  completed: '#00E676', escalated: '#FF3D57',
-};
+type TabKey = 'pending' | 'processing' | 'escalated' | 'completed';
+
+const tabConfig: { key: TabKey; label: string; match: (s: WorkOrderStatus) => boolean }[] = [
+  { key: 'pending', label: '待派单', match: (s) => s === 'pending' },
+  { key: 'processing', label: '处理中', match: (s) => s === 'assigned' || s === 'processing' },
+  { key: 'escalated', label: '已升级', match: (s) => s === 'escalated' },
+  { key: 'completed', label: '已完成', match: (s) => s === 'completed' },
+];
+
+const priorityColors = { normal: '#00E5FF', high: '#FFB020', urgent: '#FF3D57' } as const;
+const priorityLabels = { normal: '普通', high: '高', urgent: '紧急' } as const;
 const statusLabels: Record<WorkOrderStatus, string> = {
   pending: '待派单', assigned: '已派单', processing: '处理中',
   completed: '已完成', escalated: '已升级',
 };
-const priorityColors = { normal: '#7A8BA3', high: '#FFB020', urgent: '#FF3D57' };
-const priorityLabels = { normal: '普通', high: '高', urgent: '紧急' };
-const faultTypes = ['信号中断', '电源故障', '传输故障', '温度异常', '湿度异常', '电池故障', '天线故障', '带宽不足'];
+const statusColors: Record<WorkOrderStatus, string> = {
+  pending: '#FFB020', assigned: '#00E5FF', processing: '#7B61FF',
+  completed: '#00E676', escalated: '#FF3D57',
+};
 
-function isOverdue(wo: { createTime: string; status: WorkOrderStatus }) {
-  if (wo.status === 'completed') return false;
-  return Date.now() - new Date(wo.createTime).getTime() > 30 * 60 * 1000;
-}
-
-function StatusTag({ status }: { status: WorkOrderStatus }) {
+function PriorityBadge({ p }: { p: 'normal' | 'high' | 'urgent' }) {
   return (
-    <span className="px-2 py-0.5 rounded text-xs font-medium"
-      style={{ color: statusColors[status], backgroundColor: `${statusColors[status]}15` }}>
-      {statusLabels[status]}
-    </span>
-  );
-}
-
-function PriorityTag({ p }: { p: 'normal' | 'high' | 'urgent' }) {
-  return (
-    <span className="px-2 py-0.5 rounded text-xs font-medium"
-      style={{ color: priorityColors[p], backgroundColor: `${priorityColors[p]}15` }}>
+    <span
+      className="px-2 py-0.5 rounded text-[10px] font-bold font-orbitron"
+      style={{ color: priorityColors[p], backgroundColor: `${priorityColors[p]}20`, border: `1px solid ${priorityColors[p]}50` }}
+    >
       {priorityLabels[p]}
     </span>
   );
 }
 
+function StatusBadge({ status }: { status: WorkOrderStatus }) {
+  const isEscalated = status === 'escalated';
+  return (
+    <span
+      className={cn(
+        'px-2 py-0.5 rounded text-[10px] font-medium',
+        isEscalated && 'animate-pulse'
+      )}
+      style={{
+        color: isEscalated ? '#fff' : statusColors[status],
+        backgroundColor: isEscalated ? statusColors[status] : `${statusColors[status]}20`,
+        border: `1px solid ${statusColors[status]}60`,
+        boxShadow: isEscalated ? `0 0 10px ${statusColors[status]}80` : undefined,
+      }}
+    >
+      {statusLabels[status]}
+    </span>
+  );
+}
+
+function formatShortPos(pos?: { x: number; y: number; z: number }) {
+  if (!pos) return '-';
+  return `(${pos.x.toFixed(0)}, ${pos.y.toFixed(0)}, ${pos.z.toFixed(0)})`;
+}
+
+interface WorkOrderCardProps {
+  wo: WorkOrder;
+  onClick: () => void;
+}
+
+function WorkOrderCard({ wo, onClick }: WorkOrderCardProps) {
+  const isEscalated = wo.status === 'escalated';
+
+  return (
+    <motion.div
+      whileHover={{ scale: 1.008, boxShadow: '0 0 20px rgba(0, 229, 255, 0.15)' }}
+      whileTap={{ scale: 0.995 }}
+      onClick={onClick}
+      className={cn(
+        'cyber-panel hud-corner p-3 cursor-pointer relative overflow-hidden transition-all'
+      )}
+    >
+      {isEscalated && (
+        <div
+          className="absolute left-0 top-0 bottom-0 w-1 rounded-l"
+          style={{ backgroundColor: '#FF3D57', boxShadow: '0 0 12px #FF3D57' }}
+        />
+      )}
+
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <div className="flex items-center gap-2">
+          <PriorityBadge p={wo.priority} />
+          <StatusBadge status={wo.status} />
+        </div>
+        <span className="text-[10px] font-orbitron text-cyber-muted">
+          #{wo.id}
+        </span>
+      </div>
+
+      <div className="space-y-1.5 mb-3">
+        <div className="text-sm font-bold text-cyber-text truncate">{wo.stationName}</div>
+        <div className="text-xs text-cyber-accent">{wo.faultType}</div>
+        <div className="flex items-center justify-between text-[11px]">
+          <div className="flex items-center gap-1 text-cyber-muted">
+            <Clock className="w-3 h-3" />
+            <span className="font-orbitron">{wo.createTime}</span>
+          </div>
+          <div className="flex items-center gap-1 text-cyber-text">
+            <User className="w-3 h-3 text-cyber-accent" />
+            <span>{wo.maintainerName || '未指派'}</span>
+          </div>
+        </div>
+      </div>
+
+      {isEscalated && wo.escalateReason && (
+        <div className="mb-2 p-2 rounded text-[11px]" style={{ backgroundColor: '#FF3D5715', border: '1px solid #FF3D5740' }}>
+          <div className="flex items-center gap-1 mb-0.5">
+          <AlertOctagon className="w-3 h-3" style={{ color: '#FF3D57' }} />
+            <span style={{ color: '#FF3D57' }}>升级原因：{wo.escalateReason}</span>
+          </div>
+          {wo.escalateTime && (
+            <div className="text-[10px] font-orbitron text-cyber-muted ml-4">
+              {wo.escalateTime}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="space-y-1 pt-2 border-t border-cyber-border/50 text-[10px]">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1 text-cyber-muted">
+            <Navigation className="w-3 h-3 text-cyber-accent" />
+            <span>预计到达：</span>
+          </div>
+          <span className="font-orbitron text-cyber-text">
+            {wo.expectedArrivalMinutes !== undefined ? `${wo.expectedArrivalMinutes} 分钟` : '-'}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1 text-cyber-muted">
+            <MapPin className="w-3 h-3 text-cyber-warning" />
+            <span>路线：</span>
+          </div>
+          <div className="flex items-center gap-1 font-orbitron text-cyber-text">
+            <span>{formatShortPos(wo.maintainerPosition)}</span>
+            <span className="text-cyber-muted">→</span>
+            <span>{formatShortPos(wo.stationPosition)}</span>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+interface DrawerProps {
+  wo: WorkOrder;
+  onClose: () => void;
+}
+
+function DetailDrawer({ wo, onClose }: DrawerProps) {
+  const alarms = useAppStore((s) => s.alarms);
+  const setSelectedStationId = useAppStore((s) => s.setSelectedStationId);
+  const loadWorkOrders = useAppStore((s) => s.loadWorkOrders);
+  const loadAlarms = useAppStore((s) => s.loadAlarms);
+
+  const relatedAlarms = useMemo(() => {
+    if (!wo.relatedAlarmIds?.length) return [];
+    return wo.relatedAlarmIds
+      .map((id) => alarms.find((a) => a.id === id))
+      .filter(Boolean) as typeof alarms;
+  }, [wo.relatedAlarmIds, alarms]);
+
+  const [completing, setCompleting] = useState(false);
+
+  const handleComplete = async () => {
+    try {
+      setCompleting(true);
+      await api.completeWorkOrder(wo.id);
+      await Promise.all([loadWorkOrders(), loadAlarms()]);
+      onClose();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setCompleting(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 bg-black/50 z-40"
+        onClick={onClose}
+      />
+      <motion.div
+        initial={{ x: 460, opacity: 0 }}
+        animate={{ x: 0, opacity: 1 }}
+        exit={{ x: 460, opacity: 0 }}
+        transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+        className="fixed top-0 right-0 bottom-0 w-[420px] z-50"
+      >
+        <div className="cyber-panel hud-corner h-full flex flex-col overflow-hidden m-4">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-cyber-border">
+            <div>
+              <h2 className="font-orbitron text-lg font-bold text-cyber-accent glow-text">
+                工单详情
+              </h2>
+              <div className="text-xs text-cyber-muted mt-0.5 font-orbitron">
+                #{wo.id}
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-cyber-accent/10 text-cyber-muted hover:text-cyber-accent transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto scrollbar-cyber p-4 space-y-4">
+            <div className="flex items-center gap-2">
+              <PriorityBadge p={wo.priority} />
+              <StatusBadge status={wo.status} />
+            </div>
+
+            <div className="cyber-panel hud-corner p-3 space-y-2">
+              <div className="text-xs text-cyber-accent font-medium mb-1">基本信息</div>
+              <div className="space-y-1.5 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-cyber-muted">基站</span>
+                  <span className="text-cyber-text">{wo.stationName}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-cyber-muted">故障类型</span>
+                  <span className="text-cyber-text">{wo.faultType}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-cyber-muted">创建时间</span>
+                  <span className="font-orbitron text-cyber-text">{wo.createTime}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="cyber-panel hud-corner p-3">
+              <div className="text-xs text-cyber-accent font-medium mb-2 flex items-center gap-1">
+              <AlertCircle className="w-3.5 h-3.5" />
+              关联告警
+            </div>
+            {relatedAlarms.length === 0 ? (
+              <div className="text-center text-cyber-muted text-sm py-3">无关联告警</div>
+            ) : (
+              <div className="space-y-2">
+                {relatedAlarms.map((alarm) => (
+                  <div
+                    key={alarm.id}
+                    className="p-2 rounded text-xs"
+                    style={{
+                      backgroundColor: alarm.level === 'critical' ? '#FF3D5715' : '#FFB02015',
+                      border: `1px solid ${alarm.level === 'critical' ? '#FF3D5740' : '#FFB02040'}`,
+                    }}
+                  >
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span
+                        className="font-medium"
+                        style={{ color: alarm.level === 'critical' ? '#FF3D57' : '#FFB020' }}
+                      >
+                        {alarm.level === 'critical' ? '严重' : '警告'}
+                      </span>
+                      <span className="font-orbitron text-cyber-muted text-[10px]">
+                        {alarm.time}
+                      </span>
+                    </div>
+                    <div className="text-cyber-text">{alarm.message}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+            <div className="cyber-panel hud-corner p-3 space-y-2">
+              <div className="text-xs text-cyber-accent font-medium mb-1 flex items-center gap-1">
+              <User className="w-3.5 h-3.5" />
+                维护人员
+              </div>
+              <div className="space-y-1.5 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-cyber-muted">姓名</span>
+                  <span className="text-cyber-text">{wo.maintainerName || '未指派'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-cyber-muted">当前坐标</span>
+                  <span className="font-orbitron text-cyber-text">
+                    {formatShortPos(wo.maintainerPosition)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {wo.stationPosition && (
+              <div className="cyber-panel hud-corner p-3 space-y-2">
+                <div className="text-xs text-cyber-accent font-medium mb-1 flex items-center gap-1">
+                  <MapPin className="w-3.5 h-3.5" />
+                  基站位置
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-cyber-muted">坐标</span>
+                  <span className="font-orbitron text-cyber-text">
+                    {formatShortPos(wo.stationPosition)}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {wo.expectedArrivalMinutes !== undefined && (
+              <div className="cyber-panel hud-corner p-3">
+                <div className="text-xs text-cyber-accent font-medium mb-1 flex items-center gap-1">
+                  <Navigation className="w-3.5 h-3.5" />
+                  预计到达
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-cyber-muted">时间</span>
+                  <span className="font-orbitron text-cyber-warning font-bold">
+                    {wo.expectedArrivalMinutes} 分钟
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {wo.status === 'escalated' && wo.escalateReason && (
+              <div
+                className="cyber-panel hud-corner p-3"
+                style={{ borderColor: '#FF3D5760' }}
+              >
+                <div className="text-xs font-medium mb-1 flex items-center gap-1" style={{ color: '#FF3D57' }}>
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  升级信息
+                </div>
+                <div className="text-sm text-cyber-text mb-1">{wo.escalateReason}</div>
+                {wo.escalateTime && (
+                  <div className="text-[10px] font-orbitron text-cyber-muted">
+                    升级时间：{wo.escalateTime}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="p-4 border-t border-cyber-border space-y-2">
+            <button
+              onClick={() => setSelectedStationId(wo.stationId)}
+              className="w-full cyber-btn text-sm py-2 flex items-center justify-center gap-2"
+            >
+              <MapPin className="w-4 h-4" />
+              定位基站
+            </button>
+            {wo.status !== 'completed' && (
+              <button
+                onClick={handleComplete}
+                disabled={completing}
+                className="w-full cyber-btn-success text-sm py-2 flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                {completing ? '处理中...' : '完成工单'}
+              </button>
+            )}
+          </div>
+        </div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
 export default function WorkOrders() {
   const workOrders = useAppStore((s) => s.workOrders);
-  const stations = useAppStore((s) => s.stations);
-  const user = useAppStore((s) => s.user);
-  const createWorkOrder = useAppStore((s) => s.createWorkOrder);
-  const updateWorkOrderStatus = useAppStore((s) => s.updateWorkOrderStatus);
-
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [priorityFilter, setPriorityFilter] = useState('all');
+  const [activeTab, setActiveTab] = useState<TabKey>('pending');
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [showCreate, setShowCreate] = useState(false);
-  const [newStationId, setNewStationId] = useState('');
-  const [newFaultType, setNewFaultType] = useState(faultTypes[0]);
-  const [newPriority, setNewPriority] = useState<'normal' | 'high' | 'urgent'>('normal');
 
-  const filtered = useMemo(() => workOrders.filter((w) =>
-    (statusFilter === 'all' || w.status === statusFilter) &&
-    (priorityFilter === 'all' || w.priority === priorityFilter)
-  ), [workOrders, statusFilter, priorityFilter]);
-
-  const selected = workOrders.find((w) => w.id === selectedId);
-
-  const handleCreate = async () => {
-    if (!newStationId || !user) return;
-    await createWorkOrder({
-      stationId: newStationId,
-      stationName: stations.find((s) => s.id === newStationId)?.name || '',
-      faultType: newFaultType, priority: newPriority, status: 'pending',
+  const tabCounts = useMemo(() => {
+    const counts: Record<TabKey, number> = {
+      pending: 0, processing: 0, escalated: 0, completed: 0,
+    };
+    workOrders.forEach((wo) => {
+      const tab = tabConfig.find((t) => t.match(wo.status));
+      if (tab) counts[tab.key]++;
     });
-    setShowCreate(false); setNewStationId('');
-  };
+    return counts;
+  }, [workOrders]);
 
-  const handleStatus = async (status: WorkOrderStatus) => {
-    if (!selected || !user) return;
-    await updateWorkOrderStatus(selected.id, status, status === 'assigned' ? user.id : undefined);
-  };
+  const filtered = useMemo(() => {
+    const tab = tabConfig.find((t) => t.key === activeTab);
+    if (!tab) return [];
+    return workOrders
+      .filter((wo) => tab.match(wo.status))
+      .sort((a, b) => new Date(b.createTime).getTime() - new Date(a.createTime).getTime());
+  }, [workOrders, activeTab]);
 
-  const timeline = (wo: typeof selected) => {
-    if (!wo) return null;
-    const steps = [
-      { label: '创建工单', time: wo.createTime, done: true },
-      { label: '派单', time: wo.assignTime, done: !!wo.assignTime },
-      { label: '开始处理', done: wo.status === 'processing' || wo.status === 'completed' },
-      { label: '完成', done: wo.status === 'completed' },
-    ];
-    return (
-      <div className="space-y-1">
-        {steps.map((s, i) => (
-          <div key={i} className="flex items-start gap-3">
-            <div className="flex flex-col items-center">
-              <div className={cn('w-3 h-3 rounded-full border-2',
-                s.done ? 'bg-cyber-accent border-cyber-accent shadow-glow-sm' : 'bg-transparent border-cyber-muted')} />
-              {i < steps.length - 1 && <div className={cn('w-px flex-1 mt-1', s.done ? 'bg-cyber-accent/50' : 'bg-cyber-border')} />}
-            </div>
-            <div className="pb-3">
-              <div className={cn('text-sm', s.done ? 'text-cyber-text' : 'text-cyber-muted')}>{s.label}</div>
-              {s.time && <div className="text-xs text-cyber-muted font-orbitron">{s.time}</div>}
-            </div>
-          </div>
-        ))}
-      </div>
-    );
-  };
+  const selected = workOrders.find((w) => w.id === selectedId) || null;
 
   return (
     <div className="w-full h-full flex flex-col gap-3 p-4">
       <div className="cyber-panel hud-corner p-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <ClipboardList className="w-5 h-5 text-cyber-accent" />
-          <span className="font-orbitron text-base font-bold text-cyber-accent glow-text">工单管理</span>
-          <span className="text-xs text-cyber-muted">共 {filtered.length} 条</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <Filter className="w-4 h-4 text-cyber-muted" />
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
-            className="cyber-input text-xs py-1.5 px-2 w-28">
-            <option value="all">全部状态</option>
-            {Object.entries(statusLabels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-          </select>
-          <select value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value)}
-            className="cyber-input text-xs py-1.5 px-2 w-28">
-            <option value="all">全部优先级</option>
-            {Object.entries(priorityLabels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-          </select>
-          <button onClick={() => setShowCreate(true)} className="cyber-btn text-xs py-1.5 flex items-center gap-1">
-            <Plus className="w-3.5 h-3.5" /> 创建工单
-          </button>
+          <span className="font-orbitron text-base font-bold text-cyber-accent glow-text">
+            维修进度
+          </span>
+          <span className="text-xs text-cyber-muted">
+            共 {workOrders.length} 条工单
+          </span>
         </div>
       </div>
 
-      <div className="flex-1 flex gap-3 min-h-0">
-        <div className="cyber-panel hud-corner flex flex-col overflow-hidden" style={{ width: '70%' }}>
-          <div className="px-4 py-2.5 border-b border-cyber-border flex items-center text-xs text-cyber-muted font-medium">
-            <div className="w-24">工单号</div>
-            <div className="flex-1">基站名称</div>
-            <div className="w-24">故障类型</div>
-            <div className="w-20">优先级</div>
-            <div className="w-36">派单时间</div>
-            <div className="w-20">状态</div>
-            <div className="w-20">维护人员</div>
-            <div className="w-20 text-right">操作</div>
-          </div>
-          <div className="flex-1 overflow-y-auto scrollbar-cyber">
-            {filtered.map((wo) => {
-              const overdue = isOverdue(wo);
-              const active = selectedId === wo.id;
-              return (
-                <div key={wo.id} onClick={() => setSelectedId(wo.id)}
-                  className={cn('px-4 py-2.5 border-b border-cyber-border/50 flex items-center text-sm cursor-pointer transition-all',
-                    active ? 'bg-cyber-accent/10' : 'hover:bg-cyber-accent/5', overdue && 'border-l-2')}
-                  style={overdue ? { borderLeftColor: '#FF3D57' } : undefined}>
-                  <div className="w-24 font-orbitron text-cyber-accent">{wo.id}</div>
-                  <div className="flex-1 text-cyber-text truncate">{wo.stationName}</div>
-                  <div className="w-24 text-cyber-muted truncate">{wo.faultType}</div>
-                  <div className="w-20"><PriorityTag p={wo.priority} /></div>
-                  <div className="w-36 text-cyber-muted text-xs font-orbitron">{wo.createTime || '-'}</div>
-                  <div className="w-20"><StatusTag status={wo.status} /></div>
-                  <div className="w-20 text-cyber-muted text-xs truncate">{wo.maintainerName || '-'}</div>
-                  <div className="w-20 text-right text-xs text-cyber-accent">{active ? '详情 →' : '查看'}</div>
-                </div>
-              );
-            })}
-            {filtered.length === 0 && <div className="text-center text-cyber-muted py-12 text-sm">暂无工单数据</div>}
-          </div>
-        </div>
+      <div className="cyber-panel hud-corner p-2 flex gap-2">
+        {tabConfig.map((tab) => {
+          const active = activeTab === tab.key;
+          const count = tabCounts[tab.key];
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={cn(
+                'flex-1 px-3 py-2 rounded-md text-sm font-medium transition-all relative flex items-center justify-center gap-2',
+                active
+                  ? 'text-cyber-accent border border-cyber-accent/60 bg-cyber-accent/10 shadow-[0_0_15px_rgba(0,229,255,0.2)]'
+                  : 'text-cyber-muted border border-transparent hover:text-cyber-text hover:border-cyber-border'
+              )}
+            >
+              <span>{tab.label}</span>
+              <span
+                className={cn(
+                  'text-[10px] font-orbitron px-1.5 py-0.5 rounded-full min-w-[20px] text-center',
+                  active
+                    ? 'bg-cyber-accent text-cyber-bg'
+                    : 'bg-cyber-border/30 text-cyber-muted'
+                )}
+              >
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
 
-        <div className="cyber-panel hud-corner flex flex-col overflow-hidden" style={{ width: '30%' }}>
-          <div className="px-4 py-2.5 border-b border-cyber-border flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-cyber-accent" />
-            <span className="font-orbitron text-sm font-bold text-cyber-accent glow-text">工单详情</span>
+      <div className="flex-1 overflow-y-auto scrollbar-cyber">
+        {filtered.length === 0 ? (
+          <div className="h-full flex items-center justify-center text-cyber-muted text-sm">
+            暂无{tabConfig.find(t => t.key === activeTab)?.label}工单
           </div>
-          {selected ? (
-            <div className="flex-1 overflow-y-auto scrollbar-cyber p-4 space-y-4">
-              <div>
-                <div className="text-xs text-cyber-muted mb-1">工单号</div>
-                <div className="font-orbitron text-cyber-accent text-lg glow-text">{selected.id}</div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div><div className="text-xs text-cyber-muted mb-1">基站</div><div className="text-sm text-cyber-text">{selected.stationName}</div></div>
-                <div><div className="text-xs text-cyber-muted mb-1">故障类型</div><div className="text-sm text-cyber-text">{selected.faultType}</div></div>
-                <div><div className="text-xs text-cyber-muted mb-1">优先级</div><PriorityTag p={selected.priority} /></div>
-                <div><div className="text-xs text-cyber-muted mb-1">状态</div><StatusTag status={selected.status} /></div>
-                <div><div className="text-xs text-cyber-muted mb-1">维护人员</div><div className="text-sm text-cyber-text">{selected.maintainerName || '-'}</div></div>
-                <div><div className="text-xs text-cyber-muted mb-1">响应时间</div>
-                  <div className="text-sm text-cyber-text font-orbitron">{selected.responseTime ? `${selected.responseTime}分钟` : '-'}</div>
-                </div>
-              </div>
-              <div>
-                <div className="text-xs text-cyber-muted mb-2 flex items-center gap-1">
-                  <Clock className="w-3 h-3" /> 处理进度
-                </div>
-                {timeline(selected)}
-              </div>
-              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-cyber-border">
-                {selected.status === 'pending' && (
-                  <button onClick={() => handleStatus('assigned')} className="cyber-btn text-xs py-2 flex items-center justify-center gap-1">
-                    <UserCheck className="w-3.5 h-3.5" /> 接单
-                  </button>
-                )}
-                {(selected.status === 'pending' || selected.status === 'assigned') && (
-                  <button onClick={() => handleStatus('processing')} className="cyber-btn text-xs py-2 flex items-center justify-center gap-1">
-                    <PlayCircle className="w-3.5 h-3.5" /> 开始处理
-                  </button>
-                )}
-                {selected.status === 'processing' && (
-                  <button onClick={() => handleStatus('completed')} className="cyber-btn-success text-xs py-2 flex items-center justify-center gap-1">
-                    <CheckCircle2 className="w-3.5 h-3.5" /> 完成
-                  </button>
-                )}
-                {selected.status !== 'completed' && selected.status !== 'escalated' && (
-                  <button onClick={() => handleStatus('escalated')} className="cyber-btn-danger text-xs py-2 flex items-center justify-center gap-1">
-                    <ArrowUpCircle className="w-3.5 h-3.5" /> 升级
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="flex-1 flex items-center justify-center text-cyber-muted text-sm">请选择工单查看详情</div>
-          )}
-        </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {filtered.map((wo) => (
+              <WorkOrderCard
+                key={wo.id}
+                wo={wo}
+                onClick={() => setSelectedId(wo.id)}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       <AnimatePresence>
-        {showCreate && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-black/60 flex items-center justify-center z-50"
-            onClick={() => setShowCreate(false)}>
-            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }}
-              transition={{ duration: 0.2 }} onClick={(e) => e.stopPropagation()}
-              className="cyber-panel hud-corner p-5 w-[420px]">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <Plus className="w-5 h-5 text-cyber-accent" />
-                  <span className="font-orbitron text-base font-bold text-cyber-accent glow-text">创建工单</span>
-                </div>
-                <button onClick={() => setShowCreate(false)} className="text-cyber-muted hover:text-cyber-text">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-              <div className="space-y-3">
-                <div>
-                  <label className="text-xs text-cyber-muted block mb-1">选择基站</label>
-                  <select value={newStationId} onChange={(e) => setNewStationId(e.target.value)} className="cyber-input text-sm">
-                    <option value="">请选择基站</option>
-                    {stations.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs text-cyber-muted block mb-1">故障类型</label>
-                  <select value={newFaultType} onChange={(e) => setNewFaultType(e.target.value)} className="cyber-input text-sm">
-                    {faultTypes.map((f) => <option key={f} value={f}>{f}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs text-cyber-muted block mb-1">优先级</label>
-                  <div className="flex gap-2">
-                    {(['normal', 'high', 'urgent'] as const).map((p) => (
-                      <button key={p} onClick={() => setNewPriority(p)}
-                        className={cn('flex-1 px-3 py-2 rounded text-sm transition-all border',
-                          newPriority === p ? '' : 'text-cyber-muted border-cyber-border hover:border-cyber-accent/40')}
-                        style={newPriority === p ? { color: priorityColors[p], borderColor: `${priorityColors[p]}60`, backgroundColor: `${priorityColors[p]}15` } : undefined}>
-                        {priorityLabels[p]}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-              <div className="flex gap-2 mt-5">
-                <button onClick={() => setShowCreate(false)} className="flex-1 px-4 py-2 rounded border border-cyber-border text-cyber-muted hover:text-cyber-text text-sm">取消</button>
-                <button onClick={handleCreate} disabled={!newStationId} className="flex-1 cyber-btn text-sm disabled:opacity-40 disabled:cursor-not-allowed">确认创建</button>
-              </div>
-            </motion.div>
-          </motion.div>
+        {selected && (
+          <DetailDrawer wo={selected} onClose={() => setSelectedId(null)} />
         )}
       </AnimatePresence>
     </div>

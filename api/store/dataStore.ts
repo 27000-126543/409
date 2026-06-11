@@ -14,6 +14,8 @@ import type {
   WorkOrderStatus,
   ApprovalStatus,
   Vec3,
+  TrendReportData,
+  StationType,
 } from '../../shared/types.js'
 import {
   generateUsers,
@@ -105,8 +107,8 @@ class DataStore {
     type: Alarm['type'],
     level: Alarm['level'],
     message: string,
-  ): void {
-    this.alarms.unshift({
+  ): Alarm {
+    const alarm: Alarm = {
       id: generateId('alarm'),
       stationId: station.id,
       stationName: station.name,
@@ -115,7 +117,9 @@ class DataStore {
       message,
       time: formatTime(new Date()),
       handled: false,
-    })
+    }
+    this.alarms.unshift(alarm)
+    return alarm
   }
 
   private findNearestIdleMaintainer(position: Vec3): Maintainer | undefined {
@@ -148,24 +152,35 @@ class DataStore {
     if (!maintainer) return
 
     station.alarmStatus = 'critical'
-    this.addNewAlarm(station, alarmType, 'critical', alarmMessage)
+    const alarm = this.addNewAlarm(station, alarmType, 'critical', alarmMessage)
 
     maintainer.status = 'busy'
+
+    const distance = calcDistance(maintainer.position, station.position)
+    const expectedArrivalMinutes = Math.ceil(distance / 2 / 60)
 
     const order: WorkOrder = {
       id: generateId('wo'),
       stationId: station.id,
       stationName: station.name,
+      stationPosition: { ...station.position },
       faultType,
+      relatedAlarmIds: [alarm.id],
       createTime: formatTime(new Date()),
       assignTime: formatTime(new Date()),
       status: 'assigned',
       priority: 'urgent',
+      expectedArrivalMinutes,
       maintainerId: maintainer.id,
       maintainerName: maintainer.name,
       maintainerPosition: { ...maintainer.position },
     }
     this.workOrders.unshift(order)
+
+    alarm.relatedWorkOrderId = order.id
+    alarm.relatedWorkOrderStatus = order.status
+    alarm.relatedMaintainerName = maintainer.name
+
     this.criticalFaultWorkOrders.set(dispatchKey, order.id)
     this.criticalFaultWorkOrders.set(station.id, order.id)
   }
@@ -295,6 +310,8 @@ class DataStore {
         const createTimeMs = Date.parse(order.createTime.replace(' ', 'T'))
         if (!isNaN(createTimeMs) && now - createTimeMs > 30 * 60 * 1000) {
           order.status = 'escalated'
+          order.escalateTime = formatTime(new Date())
+          order.escalateReason = '工单响应超时超过30分钟'
           if (order.priority === 'normal') {
             order.priority = 'high'
           } else if (order.priority === 'high') {
@@ -308,6 +325,14 @@ class DataStore {
               'critical',
               `工单(${order.id})响应超时，已自动升级为${order.priority === 'urgent' ? '紧急' : '高'}优先级`,
             )
+          }
+          if (order.relatedAlarmIds) {
+            for (const alarmId of order.relatedAlarmIds) {
+              const alarm = this.alarms.find((a) => a.id === alarmId)
+              if (alarm) {
+                alarm.relatedWorkOrderStatus = 'escalated'
+              }
+            }
           }
           this.escalatedWorkOrders.add(order.id)
         }
@@ -462,10 +487,15 @@ class DataStore {
     return this.alarms.find((a) => a.id === id)
   }
 
-  handleAlarm(id: string): Alarm | undefined {
-    const alarm = this.alarms.find((a) => a.id === id)
+  handleAlarm(alarmId: string): Alarm | undefined {
+    const alarm = this.alarms.find((a) => a.id === alarmId)
     if (alarm) {
       alarm.handled = true
+      for (const order of this.workOrders) {
+        if (order.relatedAlarmIds && order.relatedAlarmIds.includes(alarmId)) {
+          order.relatedAlarmIds = order.relatedAlarmIds.filter((id) => id !== alarmId)
+        }
+      }
       if (this.currentUser) {
         this.addLog(this.currentUser, '处理告警', `处理告警: ${alarm.message} (${alarm.stationName})`)
       }
@@ -513,6 +543,39 @@ class DataStore {
       if (this.currentUser) {
         this.addLog(this.currentUser, '更新工单', `工单 ${order.id} 状态更新为: ${status}`)
       }
+    }
+    return order
+  }
+
+  completeWorkOrder(orderId: string): WorkOrder | undefined {
+    const order = this.workOrders.find((w) => w.id === orderId)
+    if (!order) return undefined
+
+    order.status = 'completed'
+    const createTimeMs = Date.parse(order.createTime.replace(' ', 'T'))
+    if (!isNaN(createTimeMs)) {
+      order.responseTime = Math.round((Date.now() - createTimeMs) / 60000)
+    }
+
+    if (order.relatedAlarmIds) {
+      for (const alarmId of order.relatedAlarmIds) {
+        const alarm = this.alarms.find((a) => a.id === alarmId)
+        if (alarm) {
+          alarm.handled = true
+          alarm.closedByWorkOrder = true
+        }
+      }
+    }
+
+    if (order.maintainerId) {
+      const maintainer = this.maintainers.find((m) => m.id === order.maintainerId)
+      if (maintainer) {
+        maintainer.status = 'idle'
+      }
+    }
+
+    if (this.currentUser) {
+      this.addLog(this.currentUser, '完成工单', `工单 ${order.id} 已完成`)
     }
     return order
   }
@@ -615,6 +678,65 @@ class DataStore {
     }
   }
 
+  getTrendReport(startDate: string, endDate: string, stationTypes?: StationType[]): TrendReportData {
+    const points: TrendReportData['points'] = []
+    const start = new Date(startDate)
+    const end = new Date(endDate)
+
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      const daySeed = this.hashCode(dateStr)
+      const rand = this.seededRandom(daySeed)
+      const sRange = (min: number, max: number) => rand() * (max - min) + min
+
+      const filteredStations = stationTypes && stationTypes.length > 0
+        ? this.stations.filter((s) => stationTypes.includes(s.type))
+        : this.stations
+
+      let totalAvgUsers = 0
+      let totalAvgUplink = 0
+      let totalAvgDownlink = 0
+      let totalAlarmCount = 0
+      let totalResponseTime = 0
+      let responseCount = 0
+
+      for (const station of filteredStations) {
+        const stationSeed = this.hashCode(dateStr + station.id)
+        const sRand = this.seededRandom(stationSeed)
+        const stRange = (min: number, max: number) => sRand() * (max - min) + min
+
+        totalAvgUsers += Math.max(0, Math.round(station.onlineUsers * (0.85 + stRange(0, 0.35))))
+        totalAvgUplink += Math.max(1, Math.round(station.uplinkTraffic * (0.85 + stRange(0, 0.35))))
+        totalAvgDownlink += Math.max(5, Math.round(station.downlinkTraffic * (0.85 + stRange(0, 0.35))))
+        totalAlarmCount += Math.max(0, Math.round(this.alarms.filter((a) => a.stationId === station.id).length * (0.6 + stRange(0, 0.8))))
+        const stationOrders = this.workOrders.filter((w) => w.stationId === station.id)
+        if (stationOrders.length > 0) {
+          totalResponseTime += stationOrders.reduce((sum, w) => sum + (w.responseTime || 0), 0) / stationOrders.length
+          responseCount++
+        } else {
+          totalResponseTime += stRange(8, 25)
+          responseCount++
+        }
+      }
+
+      const stationCount = Math.max(1, filteredStations.length)
+      points.push({
+        date: dateStr,
+        avgUsers: totalAvgUsers > 0 ? Math.round(totalAvgUsers / stationCount) : Math.round(sRange(50, 300)),
+        avgUplink: totalAvgUplink > 0 ? Math.round(totalAvgUplink / stationCount) : Math.round(sRange(30, 150)),
+        avgDownlink: totalAvgDownlink > 0 ? Math.round(totalAvgDownlink / stationCount) : Math.round(sRange(100, 600)),
+        alarmCount: totalAlarmCount > 0 ? Math.round(totalAlarmCount / stationCount) : Math.round(sRange(0, 5)),
+        avgResponseTime: responseCount > 0 ? Math.round(totalResponseTime / responseCount) : Math.round(sRange(8, 25)),
+      })
+    }
+
+    return {
+      startDate,
+      endDate,
+      points,
+    }
+  }
+
   getDailyReport(date?: string): DailyReportData {
     const targetDate = date || (() => {
       const today = new Date()
@@ -644,6 +766,7 @@ class DataStore {
       return {
         stationId: station.id,
         stationName: station.name,
+        stationType: station.type,
         avgUsers: Math.max(0, Math.round(baseStation.onlineUsers * (0.85 + sRange(0, 0.35)))),
         avgUplink: Math.max(1, Math.round(baseStation.uplinkTraffic * (0.85 + sRange(0, 0.35)))),
         avgDownlink: Math.max(5, Math.round(baseStation.downlinkTraffic * (0.85 + sRange(0, 0.35)))),
@@ -652,9 +775,24 @@ class DataStore {
       }
     })
 
+    const totalAvgUsers = stationReports.reduce((sum, s) => sum + s.avgUsers, 0)
+    const totalAvgUplink = stationReports.reduce((sum, s) => sum + s.avgUplink, 0)
+    const totalAvgDownlink = stationReports.reduce((sum, s) => sum + s.avgDownlink, 0)
+    const totalAlarmCount = stationReports.reduce((sum, s) => sum + s.alarmCount, 0)
+    const avgResponseTime = stationReports.length > 0
+      ? Math.round(stationReports.reduce((sum, s) => sum + s.avgResponseTime, 0) / stationReports.length)
+      : 0
+
     const report: DailyReportData = {
       date: targetDate,
       stations: stationReports,
+      summary: {
+        totalAvgUsers,
+        totalAvgUplink,
+        totalAvgDownlink,
+        totalAlarmCount,
+        avgResponseTime,
+      },
     }
 
     this.dailyReportCache.set(targetDate, report)

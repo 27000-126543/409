@@ -80,4 +80,26 @@ router.put('/:id/status', async (req: Request, res: Response): Promise<void> => 
   }
 })
 
+router.post('/:id/complete', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const order = dataStore.completeWorkOrder(req.params.id)
+    if (!order) {
+      res.status(404).json({
+        success: false,
+        error: '工单不存在',
+      })
+      return
+    }
+    res.status(200).json({
+      success: true,
+      data: order,
+    })
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: '完成工单失败',
+    })
+  }
+})
+
 export default router

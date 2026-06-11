@@ -7,13 +7,20 @@ import type { Vec3 } from '../../../shared/types';
 interface MaintenancePathProps {
   from: Vec3;
   to: Vec3;
+  highlight?: boolean;
 }
 
-export function MaintenancePath({ from, to }: MaintenancePathProps) {
+export function MaintenancePath({ from, to, highlight = false }: MaintenancePathProps) {
   const ballRef = useRef<THREE.Mesh>(null);
   const lightRef = useRef<THREE.PointLight>(null);
   const start = useMemo(() => new THREE.Vector3(from.x, from.y, from.z), [from]);
   const end = useMemo(() => new THREE.Vector3(to.x, to.y, to.z), [to]);
+  const ballSize = highlight ? 1.4 : 0.8;
+  const lineWidth = highlight ? 4 : 2;
+  const lightDist = highlight ? 25 : 10;
+  const emissiveIntensity = highlight ? 4 : 2;
+  const opacity = highlight ? 1 : 0.8;
+  const baseColor = highlight ? '#ff3d71' : '#00e5ff';
 
   const curve = useMemo(() => {
     const mid = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
@@ -39,25 +46,34 @@ export function MaintenancePath({ from, to }: MaintenancePathProps) {
 
   return (
     <group>
+      {highlight && (
+        <Line
+          points={points}
+          color="#ff3d71"
+          lineWidth={8}
+          transparent
+          opacity={0.15}
+        />
+      )}
       <Line
         points={points}
-        color="#00e5ff"
-        lineWidth={2}
+        color={baseColor}
+        lineWidth={lineWidth}
         transparent
-        opacity={0.8}
+        opacity={opacity}
         dashed
-        dashSize={2}
+        dashSize={highlight ? 3 : 2}
         gapSize={1}
       />
       <mesh ref={ballRef}>
-        <sphereGeometry args={[0.8, 16, 16]} />
+        <sphereGeometry args={[ballSize, 16, 16]} />
         <meshStandardMaterial
-          color="#00e5ff"
-          emissive="#00e5ff"
-          emissiveIntensity={2}
+          color={baseColor}
+          emissive={baseColor}
+          emissiveIntensity={emissiveIntensity}
         />
       </mesh>
-      <pointLight ref={lightRef} color="#00e5ff" intensity={2} distance={10} />
+      <pointLight ref={lightRef} color={baseColor} intensity={emissiveIntensity} distance={lightDist} />
     </group>
   );
 }

@@ -49,12 +49,17 @@ export interface WorkOrder {
   id: string;
   stationId: string;
   stationName: string;
+  stationPosition?: Vec3;
   faultType: string;
+  relatedAlarmIds?: string[];
   createTime: string;
   assignTime?: string;
   responseTime?: number;
   status: WorkOrderStatus;
   priority: 'normal' | 'high' | 'urgent';
+  escalateTime?: string;
+  escalateReason?: string;
+  expectedArrivalMinutes?: number;
   maintainerId?: string;
   maintainerName?: string;
   maintainerPosition?: Vec3;
@@ -77,6 +82,10 @@ export interface Alarm {
   message: string;
   time: string;
   handled: boolean;
+  relatedWorkOrderId?: string;
+  relatedWorkOrderStatus?: WorkOrderStatus;
+  relatedMaintainerName?: string;
+  closedByWorkOrder?: boolean;
 }
 
 export interface SiteSelection {
@@ -133,6 +142,27 @@ export interface DailyReportData {
   stations: {
     stationId: string;
     stationName: string;
+    stationType: StationType;
+    avgUsers: number;
+    avgUplink: number;
+    avgDownlink: number;
+    alarmCount: number;
+    avgResponseTime: number;
+  }[];
+  summary?: {
+    totalAvgUsers: number;
+    totalAvgUplink: number;
+    totalAvgDownlink: number;
+    totalAlarmCount: number;
+    avgResponseTime: number;
+  };
+}
+
+export interface TrendReportData {
+  startDate: string;
+  endDate: string;
+  points: {
+    date: string;
     avgUsers: number;
     avgUplink: number;
     avgDownlink: number;

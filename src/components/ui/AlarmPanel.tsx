@@ -1,19 +1,50 @@
 import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { AlertTriangle, AlertCircle, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
+import { AlertTriangle, AlertCircle, ChevronLeft, ChevronRight, Clock, MapPin, Loader2 } from 'lucide-react';
 import { useAppStore } from '@/store';
-import type { Alarm } from '../../../shared/types';
+import type { Alarm, WorkOrderStatus } from '../../../shared/types';
+import { api } from '@/lib/api';
+
+const workOrderStatusLabels: Record<WorkOrderStatus, string> = {
+  pending: '待处理',
+  assigned: '已分配',
+  processing: '处理中',
+  completed: '已完成',
+  escalated: '已升级',
+};
 
 export default function AlarmPanel() {
   const [expanded, setExpanded] = useState(true);
+  const [handlingAlarmId, setHandlingAlarmId] = useState<string | null>(null);
   const alarms = useAppStore((s) => s.alarms);
-  const handleAlarm = useAppStore((s) => s.handleAlarm);
+  const setSelectedStationId = useAppStore((s) => s.setSelectedStationId);
+  const setHighlightWorkOrderId = useAppStore((s) => s.setHighlightWorkOrderId);
+  const loadAlarms = useAppStore((s) => s.loadAlarms);
 
   const unhandledAlarms = useMemo(() => {
     return alarms
       .filter((a) => !a.handled)
       .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
   }, [alarms]);
+
+  const handleHandleAlarm = async (alarmId: string) => {
+    try {
+      setHandlingAlarmId(alarmId);
+      await api.handleAlarm(alarmId);
+      await loadAlarms();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setHandlingAlarmId(null);
+    }
+  };
+
+  const handleLocate = (alarm: Alarm) => {
+    setSelectedStationId(alarm.stationId);
+    if (alarm.relatedWorkOrderId) {
+      setHighlightWorkOrderId(alarm.relatedWorkOrderId);
+    }
+  };
 
   const formatTime = (timeStr: string) => {
     const d = new Date(timeStr);
@@ -117,6 +148,9 @@ export default function AlarmPanel() {
                 const styles = getLevelStyles(alarm.level);
                 const Icon = styles.icon;
                 const isNew = isNewAlarm(alarm.time);
+                const isHandling = handlingAlarmId === alarm.id;
+                const isClosed = alarm.closedByWorkOrder;
+                const isEscalated = alarm.relatedWorkOrderStatus === 'escalated';
                 return (
                   <motion.div
                     key={alarm.id}
@@ -125,7 +159,7 @@ export default function AlarmPanel() {
                     animate={{ opacity: 1, x: 0, scale: 1 }}
                     exit={{ opacity: 0, x: 50, height: 0, marginBottom: 0 }}
                     transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-                    className={`relative p-3 rounded-lg border ${styles.border} ${styles.bg} ${isNew ? styles.glow : ''}`}
+                    className={`relative p-3 rounded-lg border ${styles.border} ${styles.bg} ${isNew ? styles.glow : ''} ${isClosed ? 'opacity-50' : ''}`}
                   >
                     {isNew && (
                       <motion.span
@@ -141,7 +175,7 @@ export default function AlarmPanel() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-0.5">
-                          <span className="font-medium text-cyber-text text-sm truncate">
+                          <span className={`font-medium text-sm truncate ${isClosed ? 'text-cyber-muted line-through' : 'text-cyber-text'}`}>
                             {alarm.stationName}
                           </span>
                           <span
@@ -150,22 +184,64 @@ export default function AlarmPanel() {
                             {alarm.level === 'critical' ? '严重' : '警告'}
                           </span>
                         </div>
-                        <p className="text-xs text-cyber-muted leading-relaxed line-clamp-2">
+                        <p className={`text-xs leading-relaxed line-clamp-2 ${isClosed ? 'text-cyber-muted/60 line-through' : 'text-cyber-muted'}`}>
                           {alarm.message}
                         </p>
+
+                        <div className="mt-2 pt-2 border-t border-cyber-border/30">
+                          {alarm.relatedWorkOrderId ? (
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[9px] tracking-wider inline-flex items-center gap-1
+                                  ${isEscalated
+                                    ? 'bg-cyber-danger/15 text-cyber-danger border border-cyber-danger/50'
+                                    : 'bg-cyber-accent/15 text-cyber-accent border border-cyber-accent/40'
+                                  }`}
+                              >
+                                已派单→{alarm.relatedMaintainerName || '已分配'}
+                              </span>
+                              <span className={`text-[9px] ${isEscalated ? 'text-cyber-danger' : 'text-cyber-muted/70'}`}>
+                                {workOrderStatusLabels[alarm.relatedWorkOrderStatus!]}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-[10px] text-cyber-muted/50">
+                              未派单
+                            </span>
+                          )}
+                        </div>
+
                         <div className="flex items-center justify-between mt-2">
                           <div className="flex items-center gap-1 text-[10px] text-cyber-muted/80">
                             <Clock className="w-3 h-3" strokeWidth={1.5} />
                             <span>{formatTime(alarm.time)}</span>
                           </div>
-                          <button
-                            onClick={() => handleAlarm(alarm.id)}
-                            className={`px-2.5 py-1 rounded text-[10px] font-medium tracking-wider
-                              border ${styles.border} ${styles.iconColor} ${styles.bg}
-                              hover:brightness-125 transition-all duration-200`}
-                          >
-                            处理
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => handleLocate(alarm)}
+                              className="px-2 py-1 rounded text-[10px] font-medium tracking-wider
+                                border border-cyber-accent/40 text-cyber-accent bg-cyber-accent/10
+                                hover:brightness-125 transition-all duration-200
+                                flex items-center gap-1"
+                            >
+                              <MapPin className="w-2.5 h-2.5" />
+                              定位
+                            </button>
+                            <button
+                              onClick={() => handleHandleAlarm(alarm.id)}
+                              disabled={isHandling}
+                              className={`px-2.5 py-1 rounded text-[10px] font-medium tracking-wider
+                                border ${styles.border} ${styles.iconColor} ${styles.bg}
+                                hover:brightness-125 transition-all duration-200
+                                disabled:opacity-50 disabled:cursor-not-allowed
+                                flex items-center gap-1`}
+                            >
+                              {isHandling && (
+                                <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                              )}
+                              {isHandling ? '处理中' : '处理'}
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>

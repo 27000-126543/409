@@ -20,13 +20,17 @@ interface AppState {
   activeWorkOrderPaths: { orderId: string; from: { x: number; y: number; z: number }; to: { x: number; y: number; z: number } }[];
   planningMode: boolean;
   candidatePosition: { x: number; y: number; z: number } | null;
+  highlightWorkOrderId: string | null;
 
   setUser: (user: User | null) => void;
   setSelectedStationId: (id: string | null) => void;
   setPlanningMode: (v: boolean) => void;
   setCandidatePosition: (p: { x: number; y: number; z: number } | null) => void;
+  setHighlightWorkOrderId: (id: string | null) => void;
 
   loadAll: () => Promise<void>;
+  loadAlarms: () => Promise<void>;
+  loadWorkOrders: () => Promise<void>;
   loadStationDetail: (id: string) => Promise<void>;
   handleAlarm: (id: string) => Promise<void>;
   createWorkOrder: (data: Partial<WorkOrder>) => Promise<void>;
@@ -53,11 +57,40 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeWorkOrderPaths: [],
   planningMode: false,
   candidatePosition: null,
+  highlightWorkOrderId: null,
 
   setUser: (user) => set({ user }),
   setSelectedStationId: (id) => set({ selectedStationId: id }),
   setPlanningMode: (v) => set({ planningMode: v, candidatePosition: null }),
   setCandidatePosition: (p) => set({ candidatePosition: p }),
+  setHighlightWorkOrderId: (id) => set({ highlightWorkOrderId: id }),
+
+  loadAlarms: async () => {
+    try {
+      const alarms = await api.getAlarms();
+      set({ alarms });
+    } catch (e) { console.error(e); }
+  },
+
+  loadWorkOrders: async () => {
+    try {
+      const workOrders = await api.getWorkOrders();
+      const stations = get().stations;
+      const paths = workOrders
+        .filter(w => w.status === 'assigned' || w.status === 'processing')
+        .filter(w => w.maintainerPosition)
+        .map(w => {
+          const station = stations.find(s => s.id === w.stationId);
+          return station && w.maintainerPosition ? {
+            orderId: w.id,
+            from: w.maintainerPosition,
+            to: station.position,
+          } : null;
+        })
+        .filter(Boolean) as any[];
+      set({ workOrders, activeWorkOrderPaths: paths });
+    } catch (e) { console.error(e); }
+  },
 
   loadAll: async () => {
     try {

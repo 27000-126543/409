@@ -359,6 +359,7 @@ export const generateDailyReport = (stations: BaseStation[], workOrders: WorkOrd
     return {
       stationId: station.id,
       stationName: station.name,
+      stationType: station.type,
       avgUsers: Math.round(station.onlineUsers * randomInRange(0.8, 1.2)),
       avgUplink: Math.round(station.uplinkTraffic * randomInRange(0.8, 1.2)),
       avgDownlink: Math.round(station.downlinkTraffic * randomInRange(0.8, 1.2)),
@@ -367,9 +368,24 @@ export const generateDailyReport = (stations: BaseStation[], workOrders: WorkOrd
     }
   })
 
+  const totalAvgUsers = stationReports.reduce((sum, s) => sum + s.avgUsers, 0)
+  const totalAvgUplink = stationReports.reduce((sum, s) => sum + s.avgUplink, 0)
+  const totalAvgDownlink = stationReports.reduce((sum, s) => sum + s.avgDownlink, 0)
+  const totalAlarmCount = stationReports.reduce((sum, s) => sum + s.alarmCount, 0)
+  const avgResponseTime = stationReports.length > 0
+    ? Math.round(stationReports.reduce((sum, s) => sum + s.avgResponseTime, 0) / stationReports.length)
+    : 0
+
   return {
     date,
     stations: stationReports,
+    summary: {
+      totalAvgUsers,
+      totalAvgUplink,
+      totalAvgDownlink,
+      totalAlarmCount,
+      avgResponseTime,
+    },
   }
 }
 

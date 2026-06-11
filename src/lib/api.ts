@@ -1,6 +1,6 @@
 import type {
   BaseStation, TrafficDataPoint, FaultRecord, WorkOrder, Maintainer,
-  Alarm, SiteSelection, DroneRoute, DroneInspection, User, OperationLog, DailyReportData
+  Alarm, SiteSelection, DroneRoute, DroneInspection, User, OperationLog, DailyReportData, TrendReportData, StationType
 } from '../../shared/types';
 
 const BASE = '/api';
@@ -40,10 +40,15 @@ export const api = {
 
   getAlarms: (handled?: boolean) =>
     request<Alarm[]>(`/alarms${handled !== undefined ? `?handled=${handled}` : ''}`),
+  getAlarmById: (id: string) =>
+    request<Alarm>(`/alarms/${id}`),
   handleAlarm: (id: string) =>
     request<Alarm>(`/alarms/${id}/handle`, { method: 'POST' }),
 
-  getWorkOrders: () => request<WorkOrder[]>('/workorders'),
+  getWorkOrders: (status?: string) =>
+    request<WorkOrder[]>(`/workorders${status ? `?status=${status}` : ''}`),
+  getWorkOrderById: (id: string) =>
+    request<WorkOrder>(`/workorders/${id}`),
   createWorkOrder: (data: Partial<WorkOrder>) =>
     request<WorkOrder>('/workorders', {
       method: 'POST',
@@ -54,6 +59,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ status, maintainerId }),
     }),
+  completeWorkOrder: (id: string) =>
+    request<WorkOrder>(`/workorders/${id}/complete`, { method: 'POST' }),
 
   getMaintainers: () => request<Maintainer[]>('/maintainers'),
 
@@ -77,8 +84,16 @@ export const api = {
       body: JSON.stringify({ routeId }),
     }),
 
-  getDailyReport: (date: string) =>
-    request<DailyReportData>(`/reports/daily?date=${date}`),
+  getDailyReport: (date: string, types?: StationType[]) => {
+    const qs = [`date=${date}`];
+    if (types && types.length) qs.push(`types=${types.join(',')}`);
+    return request<DailyReportData>(`/reports/daily?${qs.join('&')}`);
+  },
+  getTrendReport: (startDate: string, endDate: string, types?: StationType[]) => {
+    const qs = [`startDate=${startDate}`, `endDate=${endDate}`];
+    if (types && types.length) qs.push(`types=${types.join(',')}`);
+    return request<TrendReportData>(`/reports/trend?${qs.join('&')}`);
+  },
 
   getLogs: () => request<OperationLog[]>('/logs'),
   addLog: (data: Partial<OperationLog>) =>
